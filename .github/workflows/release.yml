@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
-
+  workflow_dispatch:
+  
 jobs:
   package:
     name: Build and attach the HACS package

@@ -22,17 +22,22 @@ from .client import (
     HuaweiHealthClient,
     Tokens,
     daily_totals,
+    sample_spacing_minutes,
 )
 from .const import (
     CONF_ENABLE_HEALTH,
     CONF_ENABLE_WORKOUTS,
     CONF_HISTORY_DAYS,
+    CONF_HR_SAMPLES,
+    CONF_HR_WINDOW_DAYS,
     CONF_UPDATE_INTERVAL,
     CONF_WORKOUT_DAYS,
     DEFAULT_HISTORY_DAYS,
+    DEFAULT_HR_WINDOW_DAYS,
     DEFAULT_UPDATE_INTERVAL,
     DEFAULT_WORKOUT_DAYS,
     DOMAIN,
+    HR_SAMPLE_STORE_LIMIT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +79,21 @@ class HuaweiHealthData:
     @property
     def sessions(self) -> list[dict]:
         return (self.coordinator.data or {}).get("sessions") or []
+
+    @property
+    def hr_samples(self) -> list[dict]:
+        """The fine-grained heart-rate rows of the last poll, oldest first."""
+        return (self.coordinator.data or {}).get("hr_samples") or []
+
+    @property
+    def hr_spacing(self) -> dict[str, Any]:
+        """What spacing the cloud really delivered, measured from those rows."""
+        return (self.coordinator.data or {}).get("hr_spacing") or {}
+
+    @property
+    def hr_dropped(self) -> int:
+        """Points the memory guard cut out of the window, if any."""
+        return int((self.coordinator.data or {}).get("hr_dropped") or 0)
 
     @property
     def diagnostics(self) -> dict:
@@ -165,6 +185,24 @@ class HuaweiHealthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if entry.options.get(CONF_ENABLE_HEALTH, True):
             run("health", lambda: self.client.health_summary(history), merge_health)
 
+        # The fine-grained pass, off by default: getHealthStat gives one row per day, so
+        # without this the account can only ever show one heart-rate number per day no
+        # matter how often the band sampled. What the cloud really delivers (measured, not
+        # promised) is carried in samples_spacing so a reader can tell a lazy integration
+        # from a cloud that has nothing finer.
+        samples: list[dict] = []
+        if entry.options.get(CONF_HR_SAMPLES, False):
+            sample_days = int(entry.options.get(CONF_HR_WINDOW_DAYS)
+                              or DEFAULT_HR_WINDOW_DAYS)
+
+            def fetch_samples() -> list[dict]:
+                return self.client.heart_rate_samples(sample_days)
+
+            def merge_samples(rows: list[dict]) -> None:
+                samples.extend(rows)
+
+            run("heart_rate_samples", fetch_samples, merge_samples)
+
         workouts: list[dict] = []
         window_days = int(entry.options.get(CONF_WORKOUT_DAYS) or DEFAULT_WORKOUT_DAYS)
         if entry.options.get(CONF_ENABLE_WORKOUTS, True):
@@ -173,13 +211,14 @@ class HuaweiHealthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             run("workouts", fetch_sessions, lambda rows: workouts.extend(rows))
 
-        _LOGGER.debug("Huawei Health %s: %d day rows and %d workouts over %d days from "
-                      "%s (source %s, failures: %s)", entry.title, len(days),
-                      len(workouts), history, self.client.host, self.client.data_source,
+        _LOGGER.debug("Huawei Health %s: %d day rows, %d workouts and %d heart-rate "
+                      "samples over %d days from %s (source %s, failures: %s)",
+                      entry.title, len(days), len(workouts), len(samples), history,
+                      self.client.host, self.client.data_source,
                       "; ".join(failures) or "none")
         workouts.sort(key=lambda session: session["start"])
         notice: str | None = None
-        if not days and not workouts:
+        if not days and not workouts and not samples:
             # An empty answer is what a data centre of another region gives for a valid
             # token, so it is the first thing a reader has to be told. It is not raised as
             # UpdateFailed: a poll that failed to reach the cloud is already visible as a
@@ -204,6 +243,15 @@ class HuaweiHealthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sessions": workouts,
             "latest_session": workouts[-1] if workouts else None,
             "window_days": window_days,
+            # The fine-grained feed plus the spacing measured from it, so a reader can
+            # tell "the cloud has nothing finer" from "the integration asks too little".
+            # The whole window is kept: the write side files these rows at their own
+            # moments and a per-pass budget only paces the writes, so anything dropped here
+            # would be lost between the read and the write. The ceiling is a memory guard
+            # for a pathological answer, and dropping is then reported rather than silent.
+            "hr_samples": samples[-HR_SAMPLE_STORE_LIMIT:],
+            "hr_dropped": max(0, len(samples) - HR_SAMPLE_STORE_LIMIT),
+            "hr_spacing": sample_spacing_minutes(samples),
             "failures": failures,
             "notice": notice,
             **evidence,

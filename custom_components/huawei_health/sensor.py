@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,10 +23,13 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 
-from .const import SPORT_TYPES
+from .const import CONF_HR_SAMPLES, HR_SAMPLE_WRITE_LIMIT, SPORT_TYPES
 from .coordinator import HuaweiHealthData
 from .entity import HuaweiHealthEntity
+
+_LOGGER = logging.getLogger(__name__)
 
 UNIT_STEPS: str = "steps"
 UNIT_BPM: str = "bpm"
@@ -41,6 +45,11 @@ class HuaweiSensorDescription(SensorEntityDescription):
     # False for the sensors that describe the login rather than the data, which must stay
     # readable when the cloud answers with empty lists - that is where the reason appears.
     data_dependent: bool = True
+    # True only for the fine-grained heart-rate feed. Home Assistant's history holds
+    # nothing but states that were actually written, so a sensor written once per poll can
+    # show at most one point per update interval no matter how often the band measured.
+    # That entity writes one row per sample, at the sample's own moment.
+    sample_feed: bool = False
 
 
 def day_value(metric: str, lookback: int = 0, scale: float = 1.0
@@ -116,6 +125,31 @@ def _token_dates(data: HuaweiHealthData) -> dict[str, Any]:
     return info
 
 
+def sample_feed_attributes(data: HuaweiHealthData) -> dict[str, Any]:
+    """How dense the feed really is - measured, never promised.
+
+    Identical for every sample written in one pass on purpose: the state machine only
+    adds a history row when the state or the attributes change, so attributes that moved
+    per sample would double the rows for no added information.
+    """
+    spacing = data.hr_spacing
+    snapshot = data.coordinator.data or {}
+    return {
+        "spacing": spacing,
+        "samples_in_window": spacing.get("samples", 0),
+        "asked_for": "getHealthData",
+        # An empty feed is the option being off, not the account having no samples: the
+        # read is off by default because it is the most expensive one of the integration.
+        "enabled_by_option": bool(data.options.get(CONF_HR_SAMPLES, False)),
+        # A refused sample read has to be readable here: the state going quiet is otherwise
+        # indistinguishable from an account that has no finer samples at all.
+        "read_errors": snapshot.get("failures") or [],
+        # Only ever non-zero when the answer was bigger than the memory guard allows;
+        # silence here would mean points that never reach the history at all.
+        "dropped_by_memory_guard": data.hr_dropped,
+    }
+
+
 DESCRIPTIONS: tuple[HuaweiSensorDescription, ...] = (
     # ── the day's totals, matching the Health app's activity rings ─────────
     HuaweiSensorDescription(
@@ -184,6 +218,18 @@ DESCRIPTIONS: tuple[HuaweiSensorDescription, ...] = (
         native_unit_of_measurement=UNIT_BPM, state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:heart-minus", entity_registry_enabled_default=False,
         value=day_value("min_heart_rate"), attributes=day_date("min_heart_rate")),
+    # ── the fine-grained feed: a row per sample, not a row per poll ────────
+    # Only available when the "heart_rate_samples" option is on: the read is the most
+    # expensive one of the integration (every *ByTime window of the account's sample
+    # table), and it is the one whose answer shape is not verified against the live cloud.
+    # Disabled in the registry by default so nobody pays for it by accident.
+    HuaweiSensorDescription(
+        key="heart_rate_samples", translation_key="heart_rate_samples",
+        name="Heart rate (samples)", native_unit_of_measurement=UNIT_BPM,
+        state_class=SensorStateClass.MEASUREMENT, icon="mdi:heart-half-full",
+        entity_registry_enabled_default=False, sample_feed=True,
+        value=lambda data: (data.hr_samples[-1]["bpm"] if data.hr_samples else None),
+        attributes=sample_feed_attributes),
     # ── sleep: the night that just ended is stamped with the day it woke up in ──
     HuaweiSensorDescription(
         key="sleep_duration", translation_key="sleep_duration", name="Sleep duration",
@@ -295,8 +341,10 @@ DESCRIPTIONS: tuple[HuaweiSensorDescription, ...] = (
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry,
                             async_add_entities: AddEntitiesCallback) -> None:
     data: HuaweiHealthData = entry.runtime_data
-    async_add_entities(HuaweiHealthSensor(description, data)
-                       for description in DESCRIPTIONS)
+    async_add_entities(
+        HuaweiHeartRateFeedSensor(description, data)
+        if description.sample_feed else HuaweiHealthSensor(description, data)
+        for description in DESCRIPTIONS)
 
 
 class HuaweiHealthSensor(HuaweiHealthEntity, SensorEntity):
@@ -325,3 +373,94 @@ class HuaweiHealthSensor(HuaweiHealthEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return self.entity_description.attributes(self._data)
+
+
+class HeartRateFeedWatermark(ExtraStoredData):
+    """The newest sample already filed, kept across restarts."""
+
+    def __init__(self, json_dict: dict[str, Any]) -> None:
+        self.json_dict = json_dict
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"written_before": self.json_dict.get("written_before", 0.0)}
+
+    @property
+    def written_before(self) -> float:
+        return float(self.json_dict.get("written_before") or 0.0)
+
+
+class HuaweiHeartRateFeedSensor(HuaweiHealthSensor, RestoreEntity):
+    """The fine-grained heart-rate sensor: one history row per sample.
+
+    Home Assistant's history holds nothing but states that were written, so polling the
+    sample endpoint and writing once per poll would cap the chart at one point per update
+    interval no matter how often the band measured. Each sample is therefore written at
+    its own moment: ``states.async_set`` takes a ``timestamp``, and the recorder files the
+    row under ``state.last_updated`` - the column the history queries order by.
+
+    The watermark has to be stored on its own rather than read back from the restored
+    state: a poll with nothing new still writes the state and its attributes, and that
+    write carries the wall clock. Deriving the watermark from ``last_updated`` would then
+    skip every sample the cloud hands over afterwards, because those stamps sit behind a
+    write that happened "now".
+    """
+
+    _written_before: float = 0.0
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        restored = await self.async_get_last_extra_data()
+        if isinstance(restored, HeartRateFeedWatermark):
+            self._written_before = restored.written_before
+        self._file_samples()
+
+    @property
+    def extra_restore_state_data(self) -> ExtraStoredData:
+        return HeartRateFeedWatermark({"written_before": self._written_before})
+
+    def _handle_coordinator_update(self) -> None:
+        if not self._file_samples():
+            # Nothing new to file: behave like every other sensor of the entry, so the
+            # state and its attributes keep refreshing.
+            super()._handle_coordinator_update()
+
+    def _file_samples(self) -> bool:
+        """File the backlog past the watermark, oldest first, at most one pass's worth.
+
+        Returns whether at least one sample was filed. Two guards matter here. A sample
+        stamped ahead of this clock is left alone: a future row in the history would sort
+        in front of everything the dashboard shows, and the watermark stays behind it so a
+        later poll files it normally. And the pass is capped - a first run over a wide
+        window can hold days of samples, and all of them in one event-loop turn would
+        block it; the watermark drains the rest over the polls that follow.
+        """
+        if self.entity_id is None or not self.available:
+            return False
+        deadline = time.time() + 300
+        # Sorted here on purpose: the budget below keeps the *oldest* slice, and a window
+        # handed over newest-first would make that slice the newest samples while the
+        # watermark stayed behind everything in between - the backlog would never drain.
+        samples = sorted((sample for sample in self._data.hr_samples
+                          if self._written_before < sample["at"] <= deadline),
+                         key=lambda sample: sample["at"])
+        if not samples:
+            return False
+        backlog = len(samples)
+        samples = samples[:HR_SAMPLE_WRITE_LIMIT]
+        # One attribute calculation for the whole pass: identical attributes across the
+        # samples is what keeps the state machine from treating an attribute-only change
+        # as a row of its own.
+        attributes = self._async_calculate_state().attributes
+        for sample in samples:
+            # The sample's own reading, never the newest one: rows that all carry the same
+            # number would be a flat line pretending to be history. force_update, because
+            # two equal readings in a row are still two measurements and collapsing them
+            # would thin the chart again.
+            self.hass.states.async_set(self.entity_id, str(sample["bpm"]), attributes,
+                                       force_update=True, timestamp=sample["at"])
+            self._written_before = sample["at"]
+        _LOGGER.debug("Huawei Health %s: filed %d of %d heart-rate samples, newest at %s",
+                      self._data.entry.title, len(samples), backlog,
+                      datetime.fromtimestamp(samples[-1]["at"])
+                      .strftime("%Y-%m-%d %H:%M"))
+        return True

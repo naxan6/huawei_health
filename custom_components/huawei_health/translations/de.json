@@ -38,6 +38,8 @@
           "workout_days": "Workouts wie viele Tage zurück suchen",
           "enable_workouts": "Workouts abfragen (getSportsDataByTime)",
           "enable_health_metrics": "Puls, Schlaf und Stress abfragen (getHealthStat)",
+          "heart_rate_samples": "Puls-Messreihen abfragen (getHealthData)",
+          "heart_rate_sample_days": "Puls-Messreihen wie viele Tage zurück suchen",
           "device_code": "deviceCode eines Geräts (0 = ganzes Konto)"
         },
         "data_description": {
@@ -47,7 +49,9 @@
           "workout_days": "Workouts werden in 10-Tage-Fenstern gelesen (hartes Cloud-Limit), 30 Tage sind also drei Requests.",
           "device_code": "/profile/device/getBindDevice listet die Codes. Der Code einer Uhr verengt die Tagessummen auf dieses Gerät.",
           "enable_workouts": "Abschalten, wenn nie Workouts aufgezeichnet werden: das ist der langsamste Request.",
-          "enable_health_metrics": "Abschalten, wenn kein Gerät Puls oder Schlaf misst."
+          "enable_health_metrics": "Abschalten, wenn kein Gerät Puls oder Schlaf misst.",
+          "heart_rate_samples": "getHealthStat antwortet mit einer Aggregatzeile pro Tag, darum kann kein Tagessensor mehr als eine Pulszahl pro Tag zeigen. Diese Abfrage liest stattdessen die Messreihen und legt jede einzelne mit ihrem eigenen Zeitpunkt in den Verlauf. Sie ist die teuerste Abfrage der Integration und deshalb abgeschaltet; der Sensor „Herzfrequenz (Messreihe)“ zeigt dann die wirklich gelieferte Dichte.",
+          "heart_rate_sample_days": "Messreihen werden wie jede andere *ByTime-Abfrage in 10-Tage-Fenstern gelesen, 30 Tage sind also drei Requests. Das Fenster kostet nur beim ersten Durchgang: danach überspringt das Wasserzeichen die bereits abgelegten Messungen."
         }
       }
     }
@@ -66,6 +70,7 @@
       "heart_rate": { "name": "Puls" },
       "max_heart_rate": { "name": "Puls Maximum heute" },
       "min_heart_rate": { "name": "Puls Minimum heute" },
+      "heart_rate_samples": { "name": "Herzfrequenz (Messreihe)" },
       "sleep_duration": { "name": "Schlaf" },
       "sleep_deep": { "name": "Tiefschlaf" },
       "sleep_rem": { "name": "REM-Schlaf" },

@@ -28,21 +28,23 @@ import argparse
 import logging
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 try:  # two supported working directories: the checkout root, or custom_components/
     from huawei_health.client import (
         Tokens, discover_data_host, daily_activity, daily_totals, health_series,
         sport_sessions, HuaweiHealthClient, HuaweiError, day_int,
+        sample_spacing_minutes,
     )
-    from huawei_health.const import APP_HOSTS, APP_HOST_LABELS
+    from huawei_health.const import APP_HOSTS, APP_HOST_LABELS, HEART_RATE_TYPE
 except ImportError:  # pragma: no cover - depends on where the script is run from
     sys.path.insert(0, "custom_components")
     from huawei_health.client import (
         Tokens, discover_data_host, daily_activity, daily_totals, health_series,
         sport_sessions, HuaweiHealthClient, HuaweiError, day_int,
+        sample_spacing_minutes,
     )
-    from huawei_health.const import APP_HOSTS, APP_HOST_LABELS
+    from huawei_health.const import APP_HOSTS, APP_HOST_LABELS, HEART_RATE_TYPE
 
 
 def main() -> int:
@@ -127,6 +129,20 @@ def main() -> int:
         for row in sorted(rows, key=lambda r: r["date"])[-3:]:
             keys = {k: v for k, v in row.items() if k != "date"}
             print(f"  type {type_id} {name}: {row['date']} {keys}")
+
+    print("\n== getHealthData: heart-rate samples, the dense path ==")
+    try:
+        samples = client.heart_rate_samples(max(args.days, 1), HEART_RATE_TYPE)
+        print(f"  {sample_spacing_minutes(samples)}")
+        for sample in samples[:3] + ([] if len(samples) <= 6 else samples[-3:]):
+            print(f"  {datetime.fromtimestamp(sample['at']):%Y-%m-%d %H:%M:%S} "
+                  f"{sample['bpm']} bpm")
+        if not samples:
+            print("  no usable pair: the endpoint answered, but nothing in it looked like "
+                  "\"a moment plus a heart rate\". Run with --verbose for both verdicts "
+                  "(millisecond and day windows) the cloud gave.")
+    except HuaweiError as err:
+        print(f"  failed in both time formats: {err}")
 
     print("\n== getSportsDataByTime (workout segments) ==")
     try:

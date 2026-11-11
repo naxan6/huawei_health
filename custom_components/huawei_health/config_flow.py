@@ -44,6 +44,8 @@ from .const import (
     CONF_EXPIRES_AT,
     CONF_HISTORY_DAYS,
     CONF_HOST,
+    CONF_HR_SAMPLES,
+    CONF_HR_WINDOW_DAYS,
     CONF_REFRESH_EXPIRES_AT,
     CONF_REFRESH_TOKEN,
     CONF_SESSION_HOST,
@@ -52,6 +54,7 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     CONF_WORKOUT_DAYS,
     DEFAULT_HISTORY_DAYS,
+    DEFAULT_HR_WINDOW_DAYS,
     DEFAULT_UPDATE_INTERVAL,
     DEFAULT_WORKOUT_DAYS,
     DOMAIN,
@@ -239,6 +242,8 @@ class HuaweiHealthOptionsFlow(config_entries.OptionsFlow):
                 CONF_WORKOUT_DAYS: int(user_input[CONF_WORKOUT_DAYS]),
                 CONF_ENABLE_WORKOUTS: bool(user_input[CONF_ENABLE_WORKOUTS]),
                 CONF_ENABLE_HEALTH: bool(user_input[CONF_ENABLE_HEALTH]),
+                CONF_HR_SAMPLES: bool(user_input[CONF_HR_SAMPLES]),
+                CONF_HR_WINDOW_DAYS: int(user_input[CONF_HR_WINDOW_DAYS]),
             }
             device_code = user_input.get(CONF_DEVICE_CODE)
             if device_code:
@@ -283,6 +288,11 @@ class HuaweiHealthOptionsFlow(config_entries.OptionsFlow):
                              default=current.get(CONF_ENABLE_WORKOUTS, True)): bool,
                 vol.Optional(CONF_ENABLE_HEALTH,
                              default=current.get(CONF_ENABLE_HEALTH, True)): bool,
+                vol.Optional(CONF_HR_SAMPLES,
+                             default=current.get(CONF_HR_SAMPLES, False)): bool,
+                vol.Optional(CONF_HR_WINDOW_DAYS,
+                             default=current.get(CONF_HR_WINDOW_DAYS,
+                                                 DEFAULT_HR_WINDOW_DAYS)): days,
                 vol.Optional(CONF_DEVICE_CODE,
                              default=current.get(CONF_DEVICE_CODE) or 0): cv.positive_int,
             }))

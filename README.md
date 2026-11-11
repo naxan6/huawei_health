@@ -79,6 +79,7 @@ Datum, für das der Wert gekommen ist.
 | Moderate bis intensive Minuten heute | min | `exerciseTimeBasic.totalMidHighIntensity` |
 | Schrittziel | Schritte | `goalAchieveBasic.stepGoalValueStat` (standardmäßig deaktiviert) |
 | Puls in Ruhe, Puls, Max, Min | bpm | `getHealthStat` Typ 7 → `heartRateBasic` |
+| Herzfrequenz (Messpunkte) | bpm | `getHealthData` Typ 7 — **Messpunkte statt Tageswert**, standardmäßig deaktiviert (siehe [Granularität](#wie-fein-die-pulskurve-wirklich-ist)) |
 | Schlaf, Tiefschlaf, REM, leichter Schlaf, wach | min | `getHealthStat` Typ 9 → `professionalSleep` |
 | Schlafbewertung, Effizienz, HRV, SpO2 | Punkte / % / ms | ebenda: `sleepScore`, `sleepEfficiency`, `lastAvgHrv`, `lastAvgSpO2` |
 | Stress, Stress (letzte Messung) | Punkte | `getHealthStat` Typ 11 → `stressBasic` |
@@ -356,6 +357,7 @@ Das Tokenpaar lebt auf einem Controller (`healthcommon-drXX`), die Daten auf ein
 | Tagessummen | `/dataQuery/sport/v2/getSportsStat` | `startTime`/`endTime` als Zahlen `YYYYMMDD` |
 | Puls, Schlaf, Stress, Intensität | `/dataQuery/health/getHealthStat` (`types: [7,9,11,12]`) | `YYYYMMDD` |
 | Workouts | `/dataQuery/sport/getSportsDataByTime` (`queryType: 1`, `dataType: 2`) | `YYYYMMDD`, Fenster **höchstens 10 Tage** |
+| Puls-Messpunkte (Granularität) | `/dataQuery/health/getHealthData` (`types: [7]`) | Millisekunden (`queryType: 2`), Fenster **höchstens 10 Tage**; die Tagesform `YYYYMMDD` dient als Fallback |
 
 Berücksichtigt:
 
@@ -383,11 +385,59 @@ Sätze derselben Fahrt). Deshalb (`client.sport_sessions`):
 Darum stimmt „Letzte Aktivität“ (`sensor.last_activity`) mit der App überein, die Summe der
 Rohsegmente nicht.
 
+### Wie fein die Pulskurve wirklich ist
+
+`getHealthStat` (die Quelle der Puls-Sensoren oben) antwortet **eine Aggregatzeile pro Tag**:
+`lastHeartRate`, `avgRestingHeartRate`, `maxHeartRate`, `minHeartRate`. Es gibt auf diesem Weg
+**keine** Feinkurve — egal wie oft die Uhr gemessen hat und egal wie oft abgefragt wird. Die
+Zahl, die die Health-App in ihrer Tagesansicht als Kurve zeigt, kommt aus einer anderen
+Tabelle: `getHealthData` liefert die Messpunkte selbst (`startTime` + `value`), und die
+Auswertung des Datenexports zählte für ein Jahr **112.347 Herzfrequenzpunkte**, also rund
+**308 pro Tag** (Abstand im Median 5 Minuten).
+
+Damit diese Punkte in Home Assistant sichtbar werden, muss die Integration sie **schreiben**:
+Der Verlauf (`history`, der Graph in der Karte) besteht ausschließlich aus geschriebenen
+States, und ohne Recorder bleibt überhaupt nur der letzte Zustand. Ein Schreiben pro Abfrage
+würde die Kurve also auf **einen Punkt pro Abfrageintervall** begrenzen — bei 15 Minuten auf
+96 Punkte am Tag, egal was die Uhr geliefert hat. Der Sensor `sensor.heart_rate_samples`
+schreibt deshalb **einen State pro Messpunkt, mit dem Zeitstempel des Messpunkts**
+(`async_set(..., timestamp=…)`), nicht mit der Uhrzeit der Abfrage.
+
+Vier Entscheidungen halten das behebbar:
+
+1. **Wasserlinie statt Uhrzeit.** Gemerkt wird der neueste bereits geschriebene Messpunkt
+   (`ExtraStoredData`, überlebt Neustarts), nicht „jetzt“. Ein Durchgang, der nichts
+   gefunden hat, darf die Wasserlinie nicht auf die jetzige Uhrzeit schieben: die Punkte
+   einer späteren Synchronisation lägen sonst für immer darunter.
+2. **Schreibbudget pro Durchgang** (`HR_SAMPLE_WRITE_LIMIT`, 400): ein erstes Fenster über
+   30 Tage enthält tausende Punkte, und jeder ist ein State-Event. Ein Durchgang schreibt
+   höchstens 400 davon — die ältesten —, der Rest läuft über die folgenden Abfragen ein.
+   Der Snapshot trägt die ganze Fensterlänge (`HR_SAMPLE_STORE_LIMIT`, 20000), damit
+   zwischen „gelesen“ und „geschrieben“ nichts verloren geht.
+3. **Kein Punkt aus der Zukunft:** ein Zeitstempel mehr als 5 Minuten vor dieser Uhr wird
+   übergangen und beim nächsten Durchgang geschrieben; eine Zeil in der Zukunft würde den
+   Verlaufsort durcheinanderbringen.
+4. **Leer heißt leer.** Der Sensor zeigt das gemessene Intervall der gelieferten Punkte
+   (`spacing`: Anzahl, Median/Min/Max des Abstands, Punkte pro Tag) und `read_errors`. Damit
+   ist unterscheidbar, ob die Cloud nichts Feineres hat, ob die Option aus ist, oder ob der
+   Request abgelehnt wurde — drei Ursachen, die sonst alle als `unknown` aussehen.
+
+Der Preis: `getHealthData` ist der teuerste Request der Integration (ein POST je
+10-Tage-Fenster), und jeder Messpunkt ist eine Zeile im Recorder. Deshalb ist die Option
+**aus** und der Sensor im Geräte-Register **deaktiviert**; beides muss eingeschaltet werden
+(Option „Puls-Messpunkte abfragen“, dann den Sensor einschalten). Die Tages-Puls-Sensoren
+oben bleiben unabhängig davon bestehen und behalten ihre Langzeitstatistik.
+
+Der Rohweg ist ohne Home Assistant prüfbar: `python3 tools/check_samples.py` kontrolliert
+den Punkt-Parser, beide Zeitformate des Requests, das gemessene Intervall und — gegen die
+echte Home-Assistant-Zustandsmaschine — dass die Zeilen an den Zeitpunkten der Messpunkte
+landen und kein Punkt zweimal geschrieben wird.
+
 ### Abfrage, Fehler, Kosten
 
 - Abgefragt wird im `async_add_executor_job`: der Client ist synchron und zieht kein
   `aiohttp` rein.
-- Die drei Datenfamilien werden unabhängig abgefragt. Fällt eine aus (Konto ohne Uhr,
+- Die Datenfamilien werden unabhängig abgefragt (drei, vier mit den Puls-Messpunkten). Fällt eine aus (Konto ohne Uhr,
   Aussetzer der Cloud), aktualisieren die anderen trotzdem, und die Fehlertexte sammeln
   sich im Attribut `read_errors`. Eine **leere, aber erfolgreiche** Antwort
   (`resultCode 0`, null Sätze) ist **keine** Abfragestörung: sie landet als `notice` im
@@ -397,7 +447,10 @@ Rohsegmente nicht.
   „heruntergeschluckt“: er geht als `ConfigEntryAuthFailed` an HA, und HA malt die Karte
   für die erneute Anmeldung.
 - Der volle Zyklus mit den Standardwerten: **drei POST pro Konto alle 15 Minuten**. Bei
-  30 Tagen Geschichte wächst die Zahl der Requests nicht — nur die Antwort.
+  30 Tagen Geschichte wächst die Zahl der Requests nicht — nur die Antwort. Sind die
+  Puls-Messpunkte eingeschaltet, kommen ein POST je 10-Tage-Fenster dazu (30 Tage = drei
+  POST); die Regionssuche beim Anlegen eines Eintrags ist der einzige Vorgang, der gleich
+  acht POST auf einmal schickt (vier Gruppen × zwei Fenster).
 
 ### Welches Rechenzentrum die Daten hält
 
@@ -469,6 +522,8 @@ Tokens werden niemals ins Journal geschrieben.
 | **Workouts wie viele Tage zurück suchen** | 7 | `*ByTime` wird in 10-Tage-Fenstern gelesen |
 | **Workouts abfragen (getSportsDataByTime)** | an | abschalten nimmt den langsamsten Request weg |
 | **Puls, Schlaf und Stress abfragen (getHealthStat)** | an | abschalten, wenn kein Gerät Puls oder Schlaf misst |
+| **Puls-Messpunkte abfragen (getHealthData)** | aus | die Feinkurve; der teuerste Request, und jeder Punkt eine Recorder-Zeile — danach zusätzlich den Sensor „Herzfrequenz (Messpunkte)“ einschalten ([Granularität](#wie-fein-die-pulskurve-wirklich-ist)) |
+| **Puls-Messpunkte wie viele Tage zurück** | 3 | auch hier 10-Tage-Fenster; das Fenster wird nur beim ersten Durchgang bezahlt, danach überspringt die Wasserlinie die bereits geschriebenen Punkte |
 | **Rechenzentrum mit den Daten dieses Kontos** | automatisch suchen | vier GRS-Gruppen; eine leere Antwort der falschen Gruppe ist die häufigste Ursache für „alles `unknown`“. Die leere Auswahl löscht die gespeicherte Adresse und sucht erneut |
 | **deviceCode eines Geräts (0 = ganzes Konto)** | 0 | eine bestimmte Uhr: der Code steckt im Attribut `device_code` der letzten Aktivität und in `bound_devices`, die vollständige Liste gibt `POST /profile/device/getBindDevice` mit leerem Body |
 
@@ -537,6 +592,7 @@ template:
 | Alle Sensoren `unknown`, „Wiederanmeldung in Tagen“ = 180 | es wird die Cloud einer fremden GRS-Gruppe gefragt (Land der HUAWEI ID) oder das Konto hat keine Daten | Attribute von `sensor.re_login_due_in_days` öffnen: `data_host`, `bound_devices`, `sync_ledger`, `notice`; unter „Konfigurieren“ die Gruppe umstellen, der Eintrag lädt neu |
 | Sensoren sind `unavailable` | die Cloud antwortet mit einem Fehler (Aussetzer, widerrufenes Token) | `read_errors` enthält die `resultCode`; im Journal steht `answered nothing for the last N days` bzw. der Fehlercode |
 | Eintrag lädt ewig nicht durch | eine Data-Gruppe filtert den Port und die Suche hängt | kurzes `DISCOVERY_TIMEOUT` begrenzt das; im Journal stehen die Urteile aller vier Gruppen, Region von Hand setzen |
+| „Herzfrequenz (Messpunkte)“ bleibt `unknown`, obwohl die Option an ist | der Sensor ist im Geräte-Register noch deaktiviert, oder `getHealthData` wurde abgelehnt | Sensor einschalten (Gerät → Huawei Health → alle Entitäten); die Attribute `enabled_by_option`, `spacing`, `read_errors` und `dropped_by_memory_guard` trennen die Ursachen |
 
 ## Sicherheit und Grenzen
 
@@ -564,6 +620,11 @@ template:
   und die Parserei der Antworten ist ohne HA-Start prüfbar. Genauso lässt sich das Protokoll
   prüfen: `Tokens(refresh_token=…, uid=…, session_host=…)` aus dem eigenen Bestand, dann
   `HuaweiHealthClient(tokens).daily_summary(3)`. Tokens gehören dabei nicht ins Repository.
+- `python3 tools/check_samples.py` (vom Checkout-Stamm, auf einem Interpreter, in dem Home
+  Assistant installiert ist) prüft die Puls-Feinkurve ohne laufenden Server: Punkt-Parser,
+  beide Zeitformate des Requests, das gemessene Intervall, das Schreibbudget — und gegen die
+  echte Zustandsmaschine, dass die Zeilen an den Zeitpunkten der Messpunkte landen und kein
+  Punkt zweimal geschrieben wird.
 - Vom Terminal aus diagnosticert `tools/probe.py` ein Konto ohne Home Assistant:
   `python3 tools/probe.py --refresh-token …` (die Tokens stehen im Eintrag in
   `.storage/core.config_entries` unter `huawei_health`). Es druckt, welche der vier Gruppen

@@ -35,6 +35,11 @@ from .const import (
     AUTHORIZE_PATH,
     BAD_HUID_CODE,
     BY_TIME_WINDOW_DAYS,
+    HEART_RATE_TYPE,
+    HR_PLAUSIBLE_MAX,
+    HR_PLAUSIBLE_MIN,
+    HR_SAMPLE_TIME_KEYS,
+    HR_SAMPLE_VALUE_KEYS,
     CODE_INVALID_CODE,
     DEFAULT_DATA_SOURCE,
     DISCOVERY_PROBE_DAYS,
@@ -130,6 +135,22 @@ def _from_ymd(digits: str) -> date | None:
 
 def day_int(value: date) -> int:
     return int(value.strftime("%Y%m%d"))
+
+
+def _ms(value: int, *, end_of_day: bool = False) -> int:
+    """A YYYYMMDD day as epoch milliseconds, at its start or at its end.
+
+    A millisecond *ByTime window has to be a real range: the far edge is the last second
+    of that day, not its first, or the day it names is queried as a single instant.
+    """
+    day = _from_ymd(str(value))
+    if day is None:
+        return int(value)
+    midnight = datetime.combine(day, datetime.min.time())
+    if end_of_day:
+        return int((midnight + timedelta(days=1) - timedelta(seconds=1)).timestamp()
+                   * 1000)
+    return int(midnight.timestamp() * 1000)
 
 
 def day_windows(start: int, end: int,
@@ -577,9 +598,31 @@ class HuaweiHealthClient:
 
     def health_data(self, start: int, end: int, type_id: int, query_type: int = 1,
                     data_type: int = 2) -> dict:
-        return self.post(READ_PATHS["health_data"], {
-            "startTime": int(start), "endTime": int(end), "type": int(type_id),
-            "queryType": int(query_type), "dataType": int(data_type)})
+        """The sample endpoint, asked in both time formats the *ByTime routes accept.
+
+        The day form (``queryType: 1`` with YYYYMMDD) is the one verified against the live
+        cloud; samples are what the millisecond form (``queryType: 2``) exists for, but no
+        live answer of this endpoint is on record. So milliseconds are tried first and the
+        verified day form is the fallback, and the verdict that survives is what
+        tools/probe.py prints - a guessed shape is never baked in.
+        """
+        try:
+            return self.post(READ_PATHS["health_data"], {
+                "startTime": _ms(start), "endTime": _ms(end, end_of_day=True),
+                "type": int(type_id), "queryType": 2, "dataType": int(data_type)})
+        except HuaweiApiError as err:
+            _LOGGER.debug("getHealthData refused the millisecond window (%s); asking "
+                          "again in the verified day form", err)
+            first = err
+        try:
+            return self.post(READ_PATHS["health_data"], {
+                "startTime": int(start), "endTime": int(end), "type": int(type_id),
+                "queryType": int(query_type), "dataType": int(data_type)})
+        except HuaweiApiError as err:
+            # Both verdicts, not only the last one: the millisecond answer is what says
+            # whether this cloud keeps samples at all.
+            raise HuaweiApiError(err.code, err.url,
+                                 f"YYYYMMDD: {err} | milliseconds: {first}") from err
 
     def bind_devices(self) -> dict:
         return self.post(READ_PATHS["bind_devices"], {})
@@ -625,6 +668,26 @@ class HuaweiHealthClient:
         start = day_int(date.today() - timedelta(days=max(days, 1) - 1))
         response = self.health_stat(start, end, types=types)
         return health_series(response)
+
+    def heart_rate_samples(self, days: int = 3,
+                           type_id: int = HEART_RATE_TYPE) -> list[dict]:
+        """Every heart-rate moment the cloud has for the window, oldest first.
+
+        getHealthStat is the aggregate path - one row per day, so one number per day no
+        matter how often the band sampled. This is the sample path. getHealthData was
+        never captured live, so the answer is walked instead of read through a guessed
+        path: a shape that does not look like "a moment plus a heart rate" yields no
+        samples rather than nonsense. The ten-day cap on sample reads applies, hence the
+        window splitting.
+        """
+        end = day_int(date.today())
+        start = day_int(date.today() - timedelta(days=max(days, 1) - 1))
+        found: dict[tuple[float, int], dict] = {}
+        for window_start, window_end in day_windows(start, end):
+            response = self.health_data(window_start, window_end, type_id)
+            for moment, bpm in heart_rate_pairs(response):
+                found.setdefault((moment, bpm), {"at": moment, "bpm": bpm})
+        return sorted(found.values(), key=lambda sample: sample["at"])
 
     def device_codes(self) -> list[str]:
         """The account's bound devices as "code name", for the line that explains a read.
@@ -859,6 +922,80 @@ def health_series(payload: dict) -> list[dict]:
                         row[name] = datetime.fromtimestamp(stamp / 1000).strftime(
                             "%Y-%m-%d %H:%M")
     return [rows[key] for key in sorted(rows)]
+
+
+def heart_rate_pairs(payload: Any) -> Iterator[tuple[float, int]]:
+    """Every "a moment plus a plausible heart rate" pair in one getHealthData answer.
+
+    The endpoint was only ever seen answering 1001 (a window too wide), so its body shape
+    is not known the way getHealthStat's is. Reading a fixed path would mean guessing one,
+    so the tree is walked instead and a pair only counts when the *same* object carries a
+    usable timestamp and a heart rate in a plausible band. A day aggregate has no moment
+    in it, which is what separates the sample rows from the *Stat rows.
+    """
+    for node in _walk_dicts(payload, depth=8):
+        moment = None
+        for key in HR_SAMPLE_TIME_KEYS:
+            moment = _epoch_seconds(node.get(key))
+            if moment is not None:
+                break
+        if moment is None:
+            continue
+        for key in HR_SAMPLE_VALUE_KEYS:
+            raw = to_float(node.get(key))
+            if raw is None:
+                continue
+            bpm = round(raw)
+            if HR_PLAUSIBLE_MIN <= bpm <= HR_PLAUSIBLE_MAX:
+                yield moment, bpm
+                break
+
+
+def _epoch_seconds(raw: Any) -> float | None:
+    """A Huawei timestamp of any of its three widths, in seconds, or None.
+
+    Only stamps in a plausible recent range count: an id or a duration can look like a
+    ten-digit number, and reading that as a moment invents history.
+    """
+    value = to_float(raw)
+    if value is None:
+        return None
+    text = str(int(value))
+    if len(text) == 13:
+        seconds = value / 1000
+    elif len(text) == 10:
+        seconds = value
+    elif len(text) == 19:
+        seconds = value / 1e9
+    else:
+        return None
+    if not 1_400_000_000 <= seconds <= 2_000_000_000:
+        return None
+    return round(seconds, 3)
+
+
+def sample_spacing_minutes(samples: list[dict]) -> dict[str, Any]:
+    """What the cloud actually delivers, measured instead of promised.
+
+    A reader has to be able to tell "the integration is too lazy" from "the cloud has
+    nothing finer": the spacing of the samples that came back is that answer.
+    """
+    if len(samples) < 2:
+        return {"samples": len(samples)}
+    # Sorted first: the cloud hands its rows over newest-first, so measuring in the order
+    # received would report every gap as negative and the per-day figure from a reversed
+    # span.
+    stamps = sorted(sample["at"] for sample in samples)
+    gaps = sorted((later - earlier) / 60 for earlier, later in zip(stamps, stamps[1:]))
+    middle = gaps[len(gaps) // 2]
+    return {
+        "samples": len(samples),
+        "gap_min_median": round(middle, 1),
+        "gap_min_min": round(gaps[0], 1),
+        "gap_min_max": round(gaps[-1], 1),
+        "per_day": round(len(samples) / max(
+            (stamps[-1] - stamps[0]) / 86400, 1 / 24), 1),
+    }
 
 
 def sport_sessions(records: Iterable[dict], gap_minutes: int = 15) -> list[dict]:

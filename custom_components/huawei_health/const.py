@@ -62,8 +62,9 @@ READ_PATHS: Final = {
 }
 
 # getHealthStat/getHealthData type ids, named after the samplePoint keys in the answer.
-HEALTH_TYPES: Final = {7: "heart_rate", 9: "professional_sleep", 11: "stress",
-                       12: "exercise_intensity"}
+HEART_RATE_TYPE: Final = 7
+HEALTH_TYPES: Final = {HEART_RATE_TYPE: "heart_rate", 9: "professional_sleep",
+                       11: "stress", 12: "exercise_intensity"}
 # sportTypes for the *ByTime endpoints. 5 is the phone/band's automatic minute-by-minute
 # walking track (it covers the whole day, so it is not a workout), 6/7/8 are sleep segments.
 # 14 shows up in the data but the app never names it, so it reads as unknown.
@@ -131,10 +132,32 @@ CONF_WORKOUT_DAYS: Final = "workout_days"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
 CONF_ENABLE_WORKOUTS: Final = "enable_workouts"
 CONF_ENABLE_HEALTH: Final = "enable_health_metrics"
+CONF_HR_SAMPLES: Final = "heart_rate_samples"
+CONF_HR_WINDOW_DAYS: Final = "heart_rate_sample_days"
 CONF_CODE: Final = "code"
 
 DEFAULT_UPDATE_INTERVAL: Final = timedelta(minutes=15)
 DEFAULT_HISTORY_DAYS: Final = 3
 DEFAULT_WORKOUT_DAYS: Final = 7
+DEFAULT_HR_WINDOW_DAYS: Final = 3
 MIN_HISTORY_DAYS: Final = 1
 MAX_HISTORY_DAYS: Final = 30
+
+# The sample reader has no fixed path: getHealthData was never captured live, so the
+# answer is walked for anything shaped like "a moment plus a heart rate". The candidate
+# names below are what the app's own sample keys and the export analysis use.
+HR_SAMPLE_TIME_KEYS: Final = ("startTime", "sampleTime", "dataTime", "recordTime", "time",
+                              "ts")
+HR_SAMPLE_VALUE_KEYS: Final = ("value", "heartRate", "hr", "samplePointValue", "dataValue",
+                               "heartRateValue")
+# A plausible resting-to-peak band: this separates a sample from an id or a stamp.
+HR_PLAUSIBLE_MIN: Final = 20
+HR_PLAUSIBLE_MAX: Final = 250
+# How many samples the snapshot keeps, and how many one write pass may file.
+# The store is generous because the cloud really is that dense: the export analysis
+# counted 112,347 heart-rate points for a year, i.e. ~308 a day, so 30 days is under ten
+# thousand rows. The per-pass budget is what stops a first wide window from becoming
+# thousands of state writes at once - the watermark drains the backlog over the polls that
+# follow.
+HR_SAMPLE_STORE_LIMIT: Final = 20000
+HR_SAMPLE_WRITE_LIMIT: Final = 400

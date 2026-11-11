@@ -38,6 +38,8 @@
           "workout_days": "How many days back to look for workouts",
           "enable_workouts": "Poll workouts (getSportsDataByTime)",
           "enable_health_metrics": "Poll heart rate, sleep and stress (getHealthStat)",
+          "heart_rate_samples": "Poll heart-rate samples (getHealthData)",
+          "heart_rate_sample_days": "How many days back to look for heart-rate samples",
           "device_code": "deviceCode of one device (0 = whole account)"
         },
         "data_description": {
@@ -47,7 +49,9 @@
           "workout_days": "Workouts are read in 10-day windows (a hard cloud limit), so 30 days is three requests.",
           "device_code": "/profile/device/getBindDevice lists the codes. Setting a watch's code restricts the daily totals to that device.",
           "enable_workouts": "Turn off if you never record workouts: it drops the slowest request.",
-          "enable_health_metrics": "Turn off if no device measures heart rate or sleep."
+          "enable_health_metrics": "Turn off if no device measures heart rate or sleep.",
+          "heart_rate_samples": "getHealthStat answers one aggregate row per day, so no daily sensor can show more than one heart-rate number per day. This reads the sample rows instead and files each of them in the history at its own moment. It is the most expensive read of the integration and is off by default; the 'Heart rate (samples)' sensor then shows the spacing the cloud really delivered.",
+          "heart_rate_sample_days": "Sample reads are capped at 10-day windows like every other *ByTime route, so 30 days is three requests. The window is only paid for on the first pass: after that the watermark skips samples already filed."
         }
       }
     }
@@ -66,6 +70,7 @@
       "heart_rate": { "name": "Heart rate" },
       "max_heart_rate": { "name": "Max heart rate today" },
       "min_heart_rate": { "name": "Min heart rate today" },
+      "heart_rate_samples": { "name": "Heart rate (samples)" },
       "sleep_duration": { "name": "Sleep" },
       "sleep_deep": { "name": "Deep sleep" },
       "sleep_rem": { "name": "REM sleep" },

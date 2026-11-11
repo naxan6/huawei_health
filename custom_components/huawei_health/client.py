@@ -453,6 +453,10 @@ class HuaweiHealthClient:
                  data_source: int = DEFAULT_DATA_SOURCE, timeout: int = 30) -> None:
         self.tokens = tokens
         self.host = host or APP_HOSTS[0]
+        # deviceCode the entry's polls are narrowed to (None / 0 = the whole account).
+        # _body, _device_code and the coordinator's diagnostics all read this attribute,
+        # so it has to exist even when the entry never sets the option.
+        self.device_code = int(device_code) if device_code else None
         self.data_source = int(data_source or DEFAULT_DATA_SOURCE)
         self.version = version
         self.token_type = token_type

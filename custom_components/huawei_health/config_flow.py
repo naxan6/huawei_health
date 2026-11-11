@@ -30,10 +30,12 @@ from .client import (
     Tokens,
     authorization_code_from,
     authorization_url,
+    discover_data_host,
     exchange_authorization_code,
     query_access_token,
 )
 from .const import (
+    APP_HOST_LABELS,
     CONF_ACCESS_TOKEN,
     CONF_CODE,
     CONF_DEVICE_CODE,
@@ -41,6 +43,7 @@ from .const import (
     CONF_ENABLE_WORKOUTS,
     CONF_EXPIRES_AT,
     CONF_HISTORY_DAYS,
+    CONF_HOST,
     CONF_REFRESH_EXPIRES_AT,
     CONF_REFRESH_TOKEN,
     CONF_SESSION_HOST,
@@ -65,6 +68,14 @@ _CODE_SCHEMA = vol.Schema({vol.Required(CONF_CODE): cv.string})
 
 def _placeholders(authorize_url: str) -> dict[str, str]:
     return {"authorize_url": authorize_url, "docs": DOCS_URL}
+
+
+def _host_choices() -> dict[str, str]:
+    """The region picker: let the integration probe, or name the group by hand.
+
+    The empty key means "no host stored", which is what makes the setup probe again.
+    """
+    return dict(APP_HOST_LABELS)
 
 
 def _entry_data(tokens: Tokens) -> dict[str, Any]:
@@ -134,12 +145,38 @@ class HuaweiHealthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders=_placeholders(self._authorize_url))
 
     async def _finish(self, tokens: Tokens) -> FlowResult:
+        entry = (self.hass.config_entries.async_get_entry(self._entry_id)
+                 if self._entry_id else None)
+        # Which of the four data centres holds this account's rows is decided by the country
+        # of the HUAWEI ID and is not written in the token pair, so it has to be asked for;
+        # a wrong one answers with empty lists instead of an error. A re-login keeps whatever
+        # the entry already settled on - re-probing there would spend eight requests and
+        # could overwrite a region picked by hand. The probe runs before the entry data is
+        # built because it may rotate the pair, and the rotated accessToken is the only one
+        # the cloud still accepts.
+        chosen = ""
+        if entry is not None:
+            chosen = (entry.options[CONF_HOST] if CONF_HOST in entry.options
+                      else entry.data.get(CONF_HOST) or "")
+        host = verdicts = None
+        if not chosen:
+            host, verdicts = await self.hass.async_add_executor_job(
+                discover_data_host, tokens)
+        # Built after the probe: when the probe rotated the pair, the entry has to store the
+        # accessToken the cloud still accepts.
         data = _entry_data(tokens)
-        if self._entry_id:
-            entry = self.hass.config_entries.async_get_entry(self._entry_id)
-            if entry is not None:
-                return self.async_update_reload_and_abort(
-                    entry, data_updates=data, unique_id=tokens.uid or entry.unique_id)
+        if chosen:
+            data[CONF_HOST] = chosen
+        elif host:
+            data[CONF_HOST] = host
+            _LOGGER.info("Huawei Health: the rows of %s live on %s",
+                         tokens.uid or "the new account", host)
+        else:
+            _LOGGER.warning("Huawei Health: no data cloud has rows for %s yet (%s)",
+                            tokens.uid or "the new account", verdicts)
+        if entry is not None:
+            return self.async_update_reload_and_abort(
+                entry, data_updates=data, unique_id=tokens.uid or entry.unique_id)
         unique_id = tokens.uid or hashlib.sha256(
             (tokens.access_token or "").encode()).hexdigest()[:16]
         await self.async_set_unique_id(unique_id)
@@ -208,14 +245,30 @@ class HuaweiHealthOptionsFlow(config_entries.OptionsFlow):
                 options[CONF_DEVICE_CODE] = int(device_code)
             else:
                 options.pop(CONF_DEVICE_CODE, None)
+            host = user_input.get(CONF_HOST) or ""
+            if host:
+                options[CONF_HOST] = host
+            else:
+                # "Auto" means probe again, so the answer an earlier probe stored has to
+                # go as well or the old cloud is silently kept. Options are replaced
+                # wholesale, so nothing is set here for the key itself.
+                options.pop(CONF_HOST, None)
+                if self._entry.data.get(CONF_HOST):
+                    self.hass.config_entries.async_update_entry(
+                        self._entry,
+                        data={key: value for key, value in self._entry.data.items()
+                              if key != CONF_HOST})
             return self.async_create_entry(title="", data=options)
 
         current = self._entry.options
+        chosen = (current.get(CONF_HOST) if CONF_HOST in current
+                  else self._entry.data.get(CONF_HOST)) or ""
         days = vol.All(vol.Coerce(int), vol.Range(min=MIN_HISTORY_DAYS,
                                                  max=MAX_HISTORY_DAYS))
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
+                vol.Optional(CONF_HOST, default=chosen): vol.In(_host_choices()),
                 vol.Optional(CONF_UPDATE_INTERVAL,
                              default=current.get(CONF_UPDATE_INTERVAL)
                              or int(DEFAULT_UPDATE_INTERVAL.total_seconds() // 60)):

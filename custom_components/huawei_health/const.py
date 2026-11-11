@@ -9,8 +9,9 @@ DOMAIN: Final = "huawei_health"
 PLATFORMS: Final = ["sensor"]
 
 # ── protocol ─────────────────────────────────────────────────────────────
-# The Health app's own cloud. One host per GRS country group; the RU one is what the
-# account's app talks to, and every group answers for any client (verified live).
+# The Health app's own cloud, one host per GRS country group. The group an account's rows
+# live in follows the country of its HUAWEI ID; the others answer for the same token but
+# with nothing in them, which is why the setup probes them (see discover_data_host).
 APP_HOSTS: Final = (
     "https://sportdata-drru.things.dbankcloud.ru",
     "https://sportdata-dre.things.dbankcloud.com",
@@ -74,6 +75,38 @@ SESSION_SPORT_TYPES: Final = tuple(t for t in SPORT_TYPES if t not in (5, 6, 7, 
 # getSportsDataByTime/getHealthData answer 1001 for a span wider than ten days, whatever
 # stamp format is used, so a longer pull has to be chunked.
 BY_TIME_WINDOW_DAYS: Final = 10
+
+# Which of APP_HOSTS holds an account's rows is not written in the token, and a foreign
+# region answers 0 rows instead of an error, so the setup asks each cloud in turn for a
+# week of data, then widens the window once for accounts that synced nothing lately. Both
+# windows stay inside the *ByTime ten-day cap.
+DISCOVERY_PROBE_DAYS: Final = 7
+DISCOVERY_RETRY_DAYS: Final = 30
+
+# Discovery runs inside config-entry setup, where a cloud that filters a port simply hangs
+# until the connection dies. Four groups times two windows at the polling timeout would sit
+# there for minutes, so probing uses a short one: an unreachable group is a verdict too.
+DISCOVERY_TIMEOUT: Final = 10
+
+# dataSource is the query field the app always sends; the APK's traffic uses 2, the only
+# value verified live. The read endpoints send nothing else, so it is one client default
+# rather than a per-account option - but it is reported in the diagnostics attributes,
+# because an empty answer from the right cloud is only interpretable with it.
+DEFAULT_DATA_SOURCE: Final = 2
+
+# The GRS groups behind APP_HOSTS, in the words a user can recognise: the group follows
+# the country the HUAWEI ID was registered in, which is shown in the account's settings.
+APP_HOST_LABELS: Final = {
+    "": "Automatically find which cloud has the data",
+    "https://sportdata-drru.things.dbankcloud.ru":
+        "RU group - HUAWEI ID registered in Russia",
+    "https://sportdata-dre.things.dbankcloud.com":
+        "EU group - HUAWEI ID registered in Europe, the Middle East or Africa",
+    "https://sportdata-dra.things.dbankcloud.com":
+        "ASG group - HUAWEI ID registered in Asia-Pacific or the Americas",
+    "https://healthdata.dbankcloud.cn":
+        "CN group - HUAWEI ID registered in mainland China",
+}
 
 # resultCode -> what to do about it.
 AUTH_FAILED_CODES: Final = (1002, 1004)

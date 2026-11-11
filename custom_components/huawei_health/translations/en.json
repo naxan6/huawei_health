@@ -32,6 +32,7 @@
         "title": "Account settings",
         "description": "Every account is configured on its own. Changes are applied without restarting Home Assistant.",
         "data": {
+          "api_host": "Data centre holding this account",
           "update_interval": "Poll interval, minutes",
           "history_days": "Days of daily data to keep",
           "workout_days": "How many days back to look for workouts",
@@ -40,6 +41,7 @@
           "device_code": "deviceCode of one device (0 = whole account)"
         },
         "data_description": {
+          "api_host": "The cloud an account's rows live in follows the country the HUAWEI ID was registered in; the others answer with nothing. If every sensor reads unknown, try another group here. The host and what it answered are shown in the attributes of the 'Re-login due in days' sensor.",
           "update_interval": "Below 5 minutes is pointless: the app cloud only moves when a watch or phone syncs.",
           "history_days": "Affects the daily sensors; up to 30 days still costs a single request.",
           "workout_days": "Workouts are read in 10-day windows (a hard cloud limit), so 30 days is three requests.",

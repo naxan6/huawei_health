@@ -47,6 +47,9 @@ class HuaweiHealthData:
     tokens: Tokens
     coordinator: HuaweiHealthCoordinator
     options: dict
+    # The data centre this client was built for. Kept because choosing "detect
+    # automatically" only clears entry.data, which a plain options comparison never sees.
+    region: str | None = None
 
     def day(self, metric: str, lookback_days: int = 0) -> tuple[str, Any] | None:
         """Newest value of a per-day metric, with the date it belongs to.
@@ -72,6 +75,28 @@ class HuaweiHealthData:
     def sessions(self) -> list[dict]:
         return (self.coordinator.data or {}).get("sessions") or []
 
+    @property
+    def diagnostics(self) -> dict:
+        """What the last poll actually asked and what it answered, for the login sensor."""
+        data = self.coordinator.data or {}
+        # A failed poll leaves the previous snapshot behind, so the live error wins; the
+        # snapshot's own verdict only means anything when that poll succeeded. The fields
+        # below are what a reader compares against the Health app to tell a wrong data
+        # centre, a narrowed deviceCode and "this device uploads nothing" apart.
+        notice = self.coordinator.last_error or data.get("notice")
+        return {
+            "data_host": self.client.host,
+            "data_source": self.client.data_source,
+            "device_code": self.client.device_code or "whole account",
+            "day_rows": len(data.get("days") or {}),
+            "workout_rows": len(data.get("sessions") or []),
+            "read_errors": data.get("failures") or [],
+            "bound_devices": data.get("bound_devices") or [],
+            "sync_ledger": data.get("sync_ledger") or [],
+            "uid": self.tokens.uid,
+            "notice": notice,
+        }
+
 
 class HuaweiHealthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the account's cloud, in a worker thread, with a self-rotating token."""
@@ -91,17 +116,26 @@ class HuaweiHealthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self.tokens = tokens
+        # The reason a poll failed, or the verdict when it succeeded with nothing to say,
+        # is kept here: Home Assistant's own error accessor on the base coordinator has
+        # been renamed across releases, and a raised error would hide the empty-account
+        # explanation from the login sensor that has to show it.
+        self.last_error: str | None = None
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            return await self.hass.async_add_executor_job(self._gather)
+            data = await self.hass.async_add_executor_job(self._gather)
         except HuaweiAuthError as err:
+            self.last_error = str(err)
             # Only a fresh browser login clears this, so ask HA for the reauth card.
             raise ConfigEntryAuthFailed(str(err)) from err
         except HuaweiConnectionError as err:
-            raise UpdateFailed(f"cannot reach the Huawei Health cloud: {err}") from err
+            self.last_error = f"cannot reach the Huawei Health cloud: {err}"
+            raise UpdateFailed(self.last_error) from err
         except HuaweiError as err:
+            self.last_error = str(err)
             raise UpdateFailed(str(err)) from err
+        return data
 
     def _gather(self) -> dict[str, Any]:
         entry = self.config_entry
@@ -139,12 +173,38 @@ class HuaweiHealthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             run("workouts", fetch_sessions, lambda rows: workouts.extend(rows))
 
-        if not days and failures:
-            raise UpdateFailed("; ".join(failures))
+        _LOGGER.debug("Huawei Health %s: %d day rows and %d workouts over %d days from "
+                      "%s (source %s, failures: %s)", entry.title, len(days),
+                      len(workouts), history, self.client.host, self.client.data_source,
+                      "; ".join(failures) or "none")
         workouts.sort(key=lambda session: session["start"])
+        notice: str | None = None
+        if not days and not workouts:
+            # An empty answer is what a data centre of another region gives for a valid
+            # token, so it is the first thing a reader has to be told. It is not raised as
+            # UpdateFailed: a poll that failed to reach the cloud is already visible as a
+            # failed update, and an empty-but-successful answer has to stay readable in the
+            # login sensor's attributes, which a raised error would freeze out.
+            notice = (f"{self.client.host} (dataSource {self.client.data_source}, "
+                      f"device {self.client.device_code or 'whole account'}) answered "
+                      f"nothing for the last {history} days"
+                      + (f"; read errors: {'; '.join(failures)}" if failures else
+                         "; the region can be set under Options"))
+            # The two extra reads are the evidence a human needs to tell the causes apart:
+            # a device list that names the band but no rows means the rows live in another
+            # data centre, and the cloud's own sync ledger says what it ever received.
+            evidence = {"bound_devices": self.client.device_codes(),
+                        "sync_ledger": self.client.sync_ledger()}
+            _LOGGER.warning("Huawei Health: %s", notice)
+        else:
+            evidence = {}
+        self.last_error = notice
         return {
             "days": days,
             "sessions": workouts,
             "latest_session": workouts[-1] if workouts else None,
             "window_days": window_days,
+            "failures": failures,
+            "notice": notice,
+            **evidence,
         }

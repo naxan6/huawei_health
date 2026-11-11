@@ -38,6 +38,9 @@ class HuaweiSensorDescription(SensorEntityDescription):
 
     value: Callable[[HuaweiHealthData], Any] = lambda data: None
     attributes: Callable[[HuaweiHealthData], dict[str, Any]] = lambda data: {}
+    # False for the sensors that describe the login rather than the data, which must stay
+    # readable when the cloud answers with empty lists - that is where the reason appears.
+    data_dependent: bool = True
 
 
 def day_value(metric: str, lookback: int = 0, scale: float = 1.0
@@ -103,10 +106,14 @@ def _token_dates(data: HuaweiHealthData) -> dict[str, Any]:
     def stamp(seconds: float) -> str:
         return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M")
 
-    return {
+    info = {
         "access_token_expires": stamp(data.tokens.expires_at),
         "refresh_token_expires": stamp(data.tokens.refresh_expires_at),
     }
+    # When every other sensor of the account reads unknown, this is the one that has to
+    # say why: which cloud was asked, which device was narrowed to, what it answered.
+    info.update(data.diagnostics)
+    return info
 
 
 DESCRIPTIONS: tuple[HuaweiSensorDescription, ...] = (
@@ -280,6 +287,7 @@ DESCRIPTIONS: tuple[HuaweiSensorDescription, ...] = (
         key="relogin_in", translation_key="relogin_in", name="Re-login due in days",
         native_unit_of_measurement=UnitOfTime.DAYS, state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:account-clock", suggested_display_precision=0,
+        data_dependent=False,
         value=_days_left, attributes=_token_dates),
 )
 
@@ -300,6 +308,15 @@ class HuaweiHealthSensor(HuaweiHealthEntity, SensorEntity):
         self.entity_description = description
         self._attr_unique_id = f"{data.entry.entry_id}_{description.key}"
         # translation_key comes from the description, so names live in translations/
+
+    @property
+    def available(self) -> bool:
+        if not self.entity_description.data_dependent:
+            # The login is described by the token pair itself, so it survives a poll that
+            # brought nothing back - which is exactly when its attributes carry the reason
+            # every other sensor of the account went quiet.
+            return True
+        return super().available
 
     @property
     def native_value(self) -> Any:

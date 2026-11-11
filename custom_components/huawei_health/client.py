@@ -36,6 +36,10 @@ from .const import (
     BAD_HUID_CODE,
     BY_TIME_WINDOW_DAYS,
     CODE_INVALID_CODE,
+    DEFAULT_DATA_SOURCE,
+    DISCOVERY_PROBE_DAYS,
+    DISCOVERY_RETRY_DAYS,
+    DISCOVERY_TIMEOUT,
     HMS_APP_ID,
     OAUTH_BASE,
     OBTAIN_PATH,
@@ -446,10 +450,10 @@ class HuaweiHealthClient:
                  device_code: int | None = None, version: str = APP_VERSION,
                  token_type: int = TOKEN_TYPE, app_id: str = APP_ID,
                  client_id: str = HMS_APP_ID, language: str | None = None,
-                 timeout: int = 30) -> None:
+                 data_source: int = DEFAULT_DATA_SOURCE, timeout: int = 30) -> None:
         self.tokens = tokens
         self.host = host or APP_HOSTS[0]
-        self.device_code = device_code
+        self.data_source = int(data_source or DEFAULT_DATA_SOURCE)
         self.version = version
         self.token_type = token_type
         self.app_id = app_id
@@ -529,18 +533,27 @@ class HuaweiHealthClient:
         refresh_tokens(self.tokens, client_id=self.client_id, timeout=self.timeout)
 
     # ── endpoints ────────────────────────────────────────────────────────
+    def _device_code(self, code: int | None) -> int | None:
+        """The deviceCode to query with: an explicit argument beats the entry's own."""
+        return self.device_code if code is None else code
+
     def sports_stat(self, start: int, end: int, device_code: int | None = None) -> dict:
         """Daily totals per sport type - the numbers the Health app's charts show."""
         body: dict[str, Any] = {"startTime": int(start), "endTime": int(end),
-                                "dataSource": 2}
-        code = self.device_code if device_code is None else device_code
+                                "dataSource": self.data_source}
+        code = self._device_code(device_code)
         if code:
             body["deviceCode"] = int(code)
         return self.post(READ_PATHS["sports_stat"], body)
 
-    def sports_daily(self, start: int, end: int) -> dict:
-        return self.post(READ_PATHS["sports_daily"], {
-            "startTime": int(start), "endTime": int(end), "dataSource": 2})
+    def sports_daily(self, start: int, end: int,
+                     device_code: int | None = None) -> dict:
+        body: dict[str, Any] = {"startTime": int(start), "endTime": int(end),
+                                "dataSource": self.data_source}
+        code = self._device_code(device_code)
+        if code:
+            body["deviceCode"] = int(code)
+        return self.post(READ_PATHS["sports_daily"], body)
 
     def sports_detail(self, start: int, end: int, sport_types: Iterable[int],
                       query_type: int = 1, data_type: int = 2) -> dict:
@@ -550,11 +563,13 @@ class HuaweiHealthClient:
             "sportTypes": [int(t) for t in sport_types]})
 
     def health_stat(self, start: int, end: int, types: Iterable[int],
-                    device_code: int = 0) -> dict:
+                    device_code: int | None = None) -> dict:
+        # deviceCode 0 means "every device of the account"; a configured one narrows it.
         return self.post(READ_PATHS["health_stat"], {
             "startTime": int(start), "endTime": int(end),
             "types": [int(t) for t in types],
-            "deviceCode": int(device_code), "dataSource": 2})
+            "deviceCode": int(self._device_code(device_code) or 0),
+            "dataSource": self.data_source})
 
     def health_data(self, start: int, end: int, type_id: int, query_type: int = 1,
                     data_type: int = 2) -> dict:
@@ -606,6 +621,126 @@ class HuaweiHealthClient:
         start = day_int(date.today() - timedelta(days=max(days, 1) - 1))
         response = self.health_stat(start, end, types=types)
         return health_series(response)
+
+    def device_codes(self) -> list[str]:
+        """The account's bound devices as "code name", for the line that explains a read.
+
+        getBindDevice has no stable shape across app versions, so the answer is walked
+        instead of read by a fixed path.
+        """
+        try:
+            payload = self.bind_devices()
+        except HuaweiError as err:
+            return [f"unreadable: {err}"]
+        found: set[str] = set()
+        for node in _walk_dicts(payload):
+            code = to_int(node.get("deviceCode"))
+            if not code:
+                continue
+            name = (node.get("deviceName") or node.get("productName")
+                    or node.get("deviceModel") or "")
+            found.add(f"{code} {name}".strip())
+        return sorted(found)
+
+    def sync_versions(self) -> dict:
+        return self.post(READ_PATHS["sync_versions"], {})
+
+    def sync_ledger(self) -> list[str]:
+        """The cloud's own sync ledger, as readable lines, for the empty-account case.
+
+        getSyncVersions has no documented shape, so the answer is walked for anything that
+        reads like one entry instead of being reached through a guessed path. This is the
+        one endpoint that says whether the account has ever uploaded anything at all to the
+        cloud being asked, which is what separates a wrong region from an idle band.
+        """
+        try:
+            payload = self.sync_versions()
+        except HuaweiError as err:
+            return [f"unreadable: {err}"]
+        found: set[str] = set()
+        for node in _walk_dicts(payload):
+            keys = [k for k in ("dataType", "type", "dataTypeName", "deviceCode",
+                                "deviceName", "version", "syncVersion", "lastSyncTime",
+                                "recordDay") if node.get(k) not in (None, "", 0)]
+            if len(keys) > 1:
+                found.add(", ".join(f"{k}={node[k]}" for k in keys))
+        return sorted(found)[:40] or ["the cloud listed no sync entries"]
+
+
+# ── finding the cloud that holds this account's rows ─────────────────────
+
+
+def _walk_dicts(payload: Any, depth: int = 6) -> Iterator[dict]:
+    """Every object in a JSON tree, so a renamed key cannot hide a deviceCode."""
+    if depth <= 0:
+        return
+    if isinstance(payload, dict):
+        yield payload
+        for value in payload.values():
+            yield from _walk_dicts(value, depth - 1)
+    elif isinstance(payload, list):
+        for value in payload:
+            yield from _walk_dicts(value, depth - 1)
+
+
+def probe_data_host(tokens: Tokens, host: str, *, days: int = DISCOVERY_PROBE_DAYS,
+                    device_code: int | None = None,
+                    data_source: int = DEFAULT_DATA_SOURCE) -> tuple[int, str]:
+    """How many rows one data centre has for this account, and what went wrong.
+
+    Both families are counted: an account can hold health samples (pulse, sleep) while its
+    activity table stays empty, and the other way round, so counting only getSportsStat
+    would call such an account "not synced" and send the setup off to another cloud. A
+    negative count means neither family could be read at all, which is not the same thing
+    as "reachable and empty": only an empty answer says the rows live in another group.
+    """
+    client = HuaweiHealthClient(tokens, host=host, device_code=device_code,
+                                data_source=data_source, timeout=DISCOVERY_TIMEOUT)
+    rows, problems = 0, []
+    for name, read in (("activity", client.daily_summary),
+                       ("health", client.health_summary)):
+        try:
+            rows += len(read(days))
+        except HuaweiError as err:
+            problems.append(f"{name}: {err}")
+    if not rows and len(problems) == 2:
+        return -1, "; ".join(problems)
+    return rows, "; ".join(problems)
+
+
+def discover_data_host(tokens: Tokens, hosts: Iterable[str] = APP_HOSTS, *,
+                       days: int = DISCOVERY_PROBE_DAYS,
+                       device_code: int | None = None,
+                       data_source: int = DEFAULT_DATA_SOURCE) -> tuple[str | None, str]:
+    """Which GRS data group an account belongs to, and what every group answered.
+
+    Nothing in the token pair says it - the app asks GRS, and the answer depends on the
+    country of the HUAWEI ID. A foreign group accepts the credentials and answers with
+    zero rows rather than an error, which is exactly the "everything is unknown" symptom,
+    so the only honest test is to ask every group for a week of data and keep the first
+    one that answers with rows. An account whose band has not synced in a week reads empty
+    everywhere, so a second pass over a month separates that from a wrong group.
+    """
+    groups = list(hosts)
+    verdicts: list[str] = []
+    for window in (max(days, 1), DISCOVERY_RETRY_DAYS):
+        unreachable = 0
+        for host in groups:
+            rows, problem = probe_data_host(tokens, host, days=window,
+                                            device_code=device_code,
+                                            data_source=data_source)
+            verdicts.append(f"{host} {window}d: "
+                            + (f"{rows} rows" if rows > 0 else "0 rows")
+                            + (f" ({problem})" if problem else ""))
+            if rows > 0:
+                return host, "; ".join(verdicts)
+            unreachable += rows < 0
+        # A wider window only helps a cloud that answered and had nothing in it. When every
+        # group refused the connection, the second pass would repeat the same timeouts.
+        if unreachable == len(groups):
+            return None, "; ".join(verdicts)
+    return None, "; ".join(verdicts)
+
 
 
 # ── response shaping ─────────────────────────────────────────────────────

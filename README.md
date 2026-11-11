@@ -8,6 +8,7 @@ Browser, in dem alle 180 Tage einmal ein HUAWEI-ID-Login durchgeführt wird.
 Unterstützt werden **mehrere Konten gleichzeitig** — jedes als eigener
 Integrationseintrag, mit eigenen Tokens, eigenem Abfrageintervall und eigenem
 Sensorsatz.
+
 > **English summary.** *(Dieses README ist auf Deutsch; die folgende Zusammenfassung ist
 > englisch.)*
 > This is a custom Home Assistant integration for the Huawei Health app's own
@@ -89,10 +90,25 @@ Datum, für das der Wert gekommen ist.
 Typen mit Nullwert (`lastAvgSpO2 = -1`, `avgRestingHeartRate = 0` usf.) bedeuten: es gibt
 keine Messung, nicht „Messung null“.
 
-Die Anzeigenamen der Sensoren und die Beschriftungen im Einstellungsdialog kommen aus
-[`translations/en.json`](custom_components/huawei_health/translations/en.json) und
-`ru.json`. Eine `de.json` gibt es noch nicht — bei deutscher HA-Oberfläche erscheint diese
-Beschriftung daher englisch.
+### Was übersetzt ist und was nicht
+
+Die Texte des Login-Ablaufs und die Beschriftungen im Einstellungsdialog kommen aus
+[`translations/de.json`](custom_components/huawei_health/translations/de.json) (daneben
+`en.json` und `ru.json`, drei Dateien mit identischem Schlüsselbestand).
+
+**Die Anzeigenamen der Sensoren nicht.** `entity.py` setzt
+`_attr_has_entity_name = False`, damit Name und `entity_id` ohne Geräte- bzw. Area-Präfix
+bleiben; Home Assistant fragt eine Übersetzung unter `entity.sensor.*.name` aber nur ab,
+wenn genau dieses Flag `True` ist. Sichtbar bleibt deshalb das `name` aus `DESCRIPTIONS` in
+`sensor.py` — englisch, und für `en.json`/`ru.json` gilt dasselbe. Die Sensor-Spalte der
+Tabelle oben sagt, wofür ein Sensor steht; der Name in der Oberfläche ist englisch
+(„Schritte heute“ ↔ `Steps today`). Das Flag auf `True` zu drehen würde die Übersetzung
+aktivieren, stellte aber allen 29 Sensoren den Nicknamen der HUAWEI ID voran
+(`andrey Schritte heute`) — bewusst nicht getan.
+
+Wer die Integration in eine weitere Sprache übersetzt, hält alle drei Dateien parallel:
+gleiche Schlüssel, gleiche Platzhalter (`{authorize_url}`, `{account}`, `{docs}` — Home
+Assistant validiert das beim Laden).
 
 ## Voraussetzungen
 
@@ -215,17 +231,30 @@ Die Integration tauscht den Code gegen das Tokenpaar, erkennt das Konto an der `
 selbst das Rechenzentrum, in dem die Daten des Kontos liegen (darüber unten mehr), und
 legt den Eintrag mit dem Nicknamen der HUAWEI ID als Namen an. Nach 10–30 Sekunden
 erscheinen die Sensoren. Der Eintragsname (Nickname der HUAWEI ID) wird zum „Gerät“, die
-`entity_id` setzen sich aus ihm und dem Sensor-Schlüssel zusammen: für das Konto `andrey`
-etwa `sensor.andrey_steps`, `sensor.andrey_sleep_duration`, `sensor.andrey_last_activity` —
-die genauen IDs stehen auf der Geräteseite
-(**Einstellungen → Integrationen → Huawei Health → Eintrag**).
+`entity_id` enthält ihn aber **nicht**: `has_entity_name` ist `False`, und
+`entity_platform.py` hängt den Gerätenamen nur dann an, wenn es `True` ist. Die IDs folgen
+dem englischen Anzeigenamen, zum Beispiel:
+
+```text
+sensor.steps_today                    sensor.sleep_duration
+sensor.distance_today                 sensor.last_activity
+sensor.re_login_due_in_days           sensor.workouts_in_period
+```
+
+Bei mehreren Konten bekommt das zweite denselben Stamm mit Suffix:
+`sensor.steps_today_2`, `sensor.sleep_duration_2` usf. — welches Konto welchen Stammt,
+steht auf der Geräteseite (**Einstellungen → Integrationen → Huawei Health → Eintrag**).
+Stabil ist die `unique_id` (`<entry_id>_<schlüssel>`, z. B. `0a1b…_relogin_in`): über sie
+lassen sich die IDs im Entitäten-Register umbenennen, und Automatisierungen bleiben nach
+einem Reload gültig.
 
 Der Unterschied zwischen `unknown` und `unavailable` ist wichtig: **`unknown` bei lebendem
-„Wiederanmeldung in Tagen“ = 180** heißt, die Cloud antwortet erfolgreich, aber leer — die
-falsche GRS-Gruppe wird abgefragt oder das Konto hat keine Daten. **`unavailable`** heißt,
-die Cloud antwortet mit einem Fehler, oder dieser Datentyp ist in diesem Konto nicht
-gefüllt (zum Beispiel misst kein Gerät SpO2). Was genau gefragt wurde und was
-zurückkam, steht in den Attributen des Sensors „Wiederanmeldung in Tagen“.
+„Wiederanmeldung in Tagen“ (= `sensor.re_login_due_in_days`) = 180** heißt, die Cloud
+antwortet erfolgreich, aber leer — die falsche GRS-Gruppe wird abgefragt oder das Konto hat
+keine Daten. **`unavailable`** heißt, die Cloud antwortet mit einem Fehler, oder dieser
+Datentyp ist in diesem Konto nicht gefüllt (zum Beispiel misst kein Gerät SpO2). Was genau
+gefragt wurde und was zurückkam, steht in den Attributen von
+`sensor.re_login_due_in_days`.
 
 ## Wie die Integration arbeitet
 
@@ -315,8 +344,10 @@ Das Tokenpaar lebt auf einem Controller (`healthcommon-drXX`), die Daten auf ein
 - `refreshToken` lebt 180 Tage (`REFRESH_TOKEN_INTERVAL = 15552000000` ms). Danach hilft nur
   der Browser-Login: die Integration fängt `20020003`, wirft `ConfigEntryAuthFailed`, und HA
   zeigt die Karte **Konfigurieren** — derselbe Login-Ablauf, ohne neuen Eintrag.
-- Der Sensor **„Wiederanmeldung in Tagen“** zeigt die Restlaufzeit des refreshToken, das
-  Nahterücken lässt sich automatisieren.
+- Der Sensor „Wiederanmeldung in Tagen“ (`sensor.re_login_due_in_days`) zeigt die
+  Restlaufzeit des refreshToken, das Nahterücken lässt sich automatisieren. Er bleibt auch
+  dann lesbar, wenn alle anderen Sensoren leer sind: sein Wert kommt aus dem Tokenpaar
+  (`data_dependent=False`), und dort stehen die Diagnoseattribute.
 
 ### Was bei einer Abfrage gelesen wird
 
@@ -349,7 +380,8 @@ Sätze derselben Fahrt). Deshalb (`client.sport_sessions`):
    beträgt;
 4. die Session liefert Dauer, Distanz, Kalorien, Segmentanzahl und `deviceCode`.
 
-Darum stimmt „Letzte Aktivität“ mit der App überein, die Summe der Rohsegmente nicht.
+Darum stimmt „Letzte Aktivität“ (`sensor.last_activity`) mit der App überein, die Summe der
+Rohsegmente nicht.
 
 ### Abfrage, Fehler, Kosten
 
@@ -371,7 +403,7 @@ Darum stimmt „Letzte Aktivität“ mit der App überein, die Summe der Rohsegm
 
 Die Daten liegen auf `sportdata-drXX` / `healthdata…` — vier Stück, eins pro GRS-Gruppe
 (`const.APP_HOSTS`). In welches davon die Zeilen eines Kontos geschrieben werden, entscheidet
-das **Land, das bei der Registrierung der HUAWEI ID angegeben wurde**; im Tokenpair steht
+das **Land, das bei der Registrierung der HUAWEI ID angegeben wurde**; im Tokenpaar steht
 diese Information in keiner Form. Eine fremde Gruppe nimmt das gültige Token an und antwortet
 mit **leerer Liste statt Fehler**: Die Sensoren sind dann nicht `unavailable`, sondern
 `unknown`, und die einzige Zahl, die lebendig bleibt, ist „Wiederanmeldung in Tagen“ (180).
@@ -387,19 +419,20 @@ Aktivitätstabelle und umgekehrt; nur `getSportsStat` zu zählen würde so ein K
 „synchronisiert nirgends“ halten und die Suche in eine andere Gruppe schicken. Pro Host gilt
 ein kurzer Timeout (`DISCOVERY_TIMEOUT`), sonst hängt eine nicht erreichbare Gruppe die
 Einrichtungsphase minutenlang fest; das Urteil jeder Gruppe steht im `WARNING` des Journals,
-die Wahl im `INFO`. Eine erneute Suche beim erneuten Login unterbleibt, wenn die Region schon
-feststeht — sonst würde sie eine von Hand gewählte Gruppe überschreiben.
+die Wahl im `INFO`. Beim erneuten Login wird nicht noch einmal gesucht, wenn die Region
+schon feststeht — sonst würde die Suche eine von Hand gewählte Gruppe überschreiben.
 
 Die Region lässt sich von Hand setzen: **Einstellungen → Integrationen → Huawei Health →
-⋮ → Konfigurieren → „Data centre holding this account“** (die Beschriftung kommt aus
-`translations/en.json`, da es keine `de.json` gibt). Die Auswahl
-„Automatically find which cloud has the data“ löscht den gespeicherten Address — sowohl in
-`options` als auch in `entry.data` — und der nächste Ladevorgang geht wieder durch alle
-Gruppen.
+⋮ → Konfigurieren → „Rechenzentrum mit den Daten dieses Kontos“**. Die leere Auswahl
+(„Automatically find which cloud has the data“) löscht die gespeicherte Adresse — sowohl in
+`options` als auch in `entry.data` —, und der nächste Ladevorgang geht wieder durch alle
+Gruppen. Die Einträge der Auswahlliste selbst stammen aus `const.APP_HOST_LABELS` und bleiben
+unabhängig von der Oberflächensprache englisch; übersetzt sind über `de.json` Feldname und
+Erklärung.
 
 Bleibt die Antwort der schon gewählten Cloud leer, ist das kein `UpdateFailed`: sonst würden
-die Attribute, die die Erklärung enthalten, nicht mehr aktualisiert. Stattdessen stehen im
-Sensor „Wiederanmeldung in Tagen“ Felder, mit denen sich die Ursachen trennen lassen:
+die Attribute, die die Erklärung enthalten, nicht mehr aktualisiert. Stattdessen stehen in
+`sensor.re_login_due_in_days` Felder, mit denen sich die Ursachen trennen lassen:
 
 | Attribut | Womit geprüft |
 | --- | --- |
@@ -431,13 +464,13 @@ Tokens werden niemals ins Journal geschrieben.
 
 | Feld | Standard | Bedeutung |
 | --- | --- | --- |
-| `Poll interval, minutes` | 15 min | öfter bringt nichts: die App-Cloud bewegt sich nur durch die Synchronisation der Uhr |
-| `Days of daily data to keep` | 3 | Fenster der `*Stat`-Abfragen; wächst nicht mit der Zahl der Requests |
-| `How many days back to look for workouts` | 7 | `*ByTime` wird in 10-Tage-Fenstern gelesen |
-| `Poll workouts (getSportsDataByTime)` | an | abschalten nimmt den langsamsten Request weg |
-| `Poll heart rate, sleep and stress (getHealthStat)` | an | abschalten, wenn kein Gerät Puls oder Schlaf misst |
-| `Data centre holding this account` | automatisch suchen | vier GRS-Gruppen; eine leere Antwort der falschen Gruppe ist die häufigste Ursache für „alles `unknown`“. „Automatisch“ löscht die gespeicherte Adresse und sucht erneut |
-| `deviceCode` (0 = ganzes Konto) | 0 | eine bestimmte Uhr: der Code steckt im Attribut `device_code` der letzten Aktivität und in `bound_devices`, die vollständige Liste gibt `POST /profile/device/getBindDevice` mit leerem Body |
+| **Abfrageintervall, Minuten** | 15 | öfter bringt nichts: die App-Cloud bewegt sich nur durch die Synchronisation der Uhr |
+| **Tage an Tagesdaten behalten** | 3 | Fenster der `*Stat`-Abfragen; wächst nicht mit der Zahl der Requests |
+| **Workouts wie viele Tage zurück suchen** | 7 | `*ByTime` wird in 10-Tage-Fenstern gelesen |
+| **Workouts abfragen (getSportsDataByTime)** | an | abschalten nimmt den langsamsten Request weg |
+| **Puls, Schlaf und Stress abfragen (getHealthStat)** | an | abschalten, wenn kein Gerät Puls oder Schlaf misst |
+| **Rechenzentrum mit den Daten dieses Kontos** | automatisch suchen | vier GRS-Gruppen; eine leere Antwort der falschen Gruppe ist die häufigste Ursache für „alles `unknown`“. Die leere Auswahl löscht die gespeicherte Adresse und sucht erneut |
+| **deviceCode eines Geräts (0 = ganzes Konto)** | 0 | eine bestimmte Uhr: der Code steckt im Attribut `device_code` der letzten Aktivität und in `bound_devices`, die vollständige Liste gibt `POST /profile/device/getBindDevice` mit leerem Body |
 
 Eine Änderung der Einstellungen lädt nur diesen einen Integrationseintrag neu.
 
@@ -450,34 +483,41 @@ Bedingung: **dieselbe HUAWEI ID kann nicht zweimal angelegt werden** (unique id 
 bestehenden Eintrags).
 
 Nützlich für Familien: die Uhr von Kind oder Partner, die in deren Konto synchronisiert,
-ergibt eigene Entitäten, und Automatisierungen schneiden sich nicht.
+ergibt eigene Entitäten, und Automatisierungen schneiden sich nicht. Weil die
+`entity_id`-Stämme gleich sind, gilt: Welches Konto `sensor.steps_today` bekommt und welches
+`sensor.steps_today_2`, entscheidet die Reihenfolge der Einrichtung. Einmal über den
+Entitäten-Register umbenennen und beim ersten Konto die **Wiederherstellung der
+Standardnamen nicht** drücken.
 
 ## Automatisierungsbeispiele
+
+Die IDs unten gehen vom ersten Konto aus; bei einem zweiten sind dieselben Stämme mit `_2`
+belegt (`sensor.steps_today_2`). Vorher im Entitäten-Register prüfen.
 
 ```yaml
 # daran erinnern, dass in zwei Wochen ein Login nötig ist
 automation:
   - trigger:
       - platform: numeric_state
-        entity_id: sensor.andrey_relogin_in
+        entity_id: sensor.re_login_due_in_days
         below: 14
     action:
       - service: notify.mobile_app
         data:
           message: >-
-            In {{ states('sensor.andrey_relogin_in') }} Tagen verlangt Huawei
+            In {{ states('sensor.re_login_due_in_days') }} Tagen verlangt Huawei
             eine neue Anmeldung.
 ```
 
 ```yaml
-# Morgenskarte: Schritte von gestern, Schlaf
+# Morgenskarte: Schritte, Schlaf, Puls in Ruhe
 template:
   - sensor:
       - name: "Huawei: Morgenübersicht"
         state: >-
-          Schritte {{ states('sensor.andrey_steps') }};
-          Schlaf {{ (states('sensor.andrey_sleep_duration') | float(0) / 60) | round(1) }} h;
-          Puls in Ruhe {{ states('sensor.andrey_resting_heart_rate') }}.
+          Schritte {{ states('sensor.steps_today') }};
+          Schlaf {{ (states('sensor.sleep_duration') | float(0) / 60) | round(1) }} h;
+          Puls in Ruhe {{ states('sensor.resting_heart_rate') }}.
 ```
 
 ## Fehlerbilder
@@ -488,21 +528,21 @@ template:
 | `20020001` | `authorizationCode` abgelaufen oder schon benutzt | Login-Seite neu öffnen und neuen Code einfügen |
 | `20020003` | refreshToken widerrufen oder abgelaufen (180 Tage) | „Konfigurieren“ → neuer Login |
 | `20010004` | Header `x-huid` passt nicht zum Token | Integration rotiert/neu anfragt selbst; bleibt es bestehen, den Eintrag neu anlegen |
-| `1001` | `*ByTime`-Fenster breiter als 10 Tage oder Zeit in Sekunden | `How many days back to look for workouts` prüfen; die Integration zerlegt das Fenster selbst |
+| `1001` | `*ByTime`-Fenster breiter als 10 Tage oder Zeit in Sekunden | „Workouts wie viele Tage zurück suchen“ prüfen; die Integration zerlegt das Fenster selbst |
 | `1002`/`1004` | accessToken lebt nicht mehr (meist hat das Telefon das Paar neu geprüft) | Rotation und Wiederholung laufen automatisch |
 | `1005` | Body ohne Token | Konfigurationsfehler, Eintrag neu anlegen |
 | `30005 Invalid device` | `deviceCode` aus einem anderen Konto | Feld `deviceCode` auf 0 setzen oder den eigenen nehmen |
 | Knopf „Allow“ reagiert nicht | Mobilmodus greift nicht | **F12 → Strg+Shift+M → Gerät wählen → Reload** |
 | Zeile `Failed to launch` fehlt | Seite ist nie zum Redirect gekommen | Adresse über **Network → 302 → Location** holen |
-| Alle Sensoren `unknown`, „Wiederanmeldung in Tagen“ = 180 | es wird die Cloud einer fremden GRS-Gruppe gefragt (Land der HUAWEI ID) oder das Konto hat keine Daten | Attribute des Sensors „Wiederanmeldung in Tagen“ öffnen: `data_host`, `bound_devices`, `sync_ledger`, `notice`; unter „Konfigurieren“ die Gruppe umstellen, Eintrag lädt neu |
+| Alle Sensoren `unknown`, „Wiederanmeldung in Tagen“ = 180 | es wird die Cloud einer fremden GRS-Gruppe gefragt (Land der HUAWEI ID) oder das Konto hat keine Daten | Attribute von `sensor.re_login_due_in_days` öffnen: `data_host`, `bound_devices`, `sync_ledger`, `notice`; unter „Konfigurieren“ die Gruppe umstellen, der Eintrag lädt neu |
 | Sensoren sind `unavailable` | die Cloud antwortet mit einem Fehler (Aussetzer, widerrufenes Token) | `read_errors` enthält die `resultCode`; im Journal steht `answered nothing for the last N days` bzw. der Fehlercode |
 | Eintrag lädt ewig nicht durch | eine Data-Gruppe filtert den Port und die Suche hängt | kurzes `DISCOVERY_TIMEOUT` begrenzt das; im Journal stehen die Urteile aller vier Gruppen, Region von Hand setzen |
 
 ## Sicherheit und Grenzen
 
-- **Inoffizielle API.** Das Anfrageschema ist von Huawei nicht dokumentiert und kann sich mit
-  einem App-Update ändern. Ändert die Cloud ihre Antworten, weist die Integration den Fehler
-  über `resultCode` aus.
+- **Inoffizielle API.** Das Anfrageschema ist von Huawei nicht dokumentiert und kann sich
+  mit einem App-Update ändern. Ändert die Cloud ihre Antworten, weist die Integration den
+  Fehler über `resultCode` aus.
 - **Eine lebende Sitzung pro Gerät.** Health-App und Integration benutzen denselben
   refreshToken; recht hat, wer zuletzt rotiert hat. Die Integration erholt sich über
   automatische Rotation, aber wenn das Telefon das Token alle paar Minuten „zurückholt“,

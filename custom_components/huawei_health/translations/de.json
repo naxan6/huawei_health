@@ -1,0 +1,103 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HUAWEI-ID-Login im Browser",
+        "description": "Die Huawei-Health-App wird nicht gebraucht: Das Tokenpaar stammt von einem gewöhnlichen HUAWEI-ID-Login im Browser. Nur der Zustimmungsschritt ist Handarbeit, alles andere macht die Integration selbst.\n\n**Schritt 1. Login-Seite in einem normalen Browser öffnen** (Chrome, Firefox, was auch immer du nutzt):\n\n[{authorize_url}]({authorize_url})\n\n**Schritt 2. Den Browser in den Modus eines mobilen Geräts schalten.** Der Knopf *Allow* auf der Zustimmungsseite reagiert nur auf Touch — ein Mausklick tut nichts.\n\n1. **F12** drücken (oder **Strg+Shift+I**, auf macOS **Cmd+Option+I**) — das öffnet die DevTools.\n2. **Strg+Shift+M** drücken (auf macOS **Cmd+Shift+M**) — das ist der Knopf *Toggle device toolbar* oben links im DevTools-Bedienfeld.\n3. In der Leiste, die erscheint, ein Gerät wie **iPhone 12 Pro** oder **Pixel 7** wählen und **Reload** drücken (der Kreispfeil in derselben Leiste).\n4. Die Seite lädt mit dem Mobil-Layout: bis zum Ende scrollen und **Allow** drücken — der Cursor arbeitet jetzt wie ein Finger.\n\n**Schritt 3. Hierher zurückkehren** und die Adresse einfügen, auf der der Browser stehengeblieben ist — im nächsten Schritt.\n\nAusführliche Anleitung, Schritt für Schritt: {docs}"
+      },
+      "code": {
+        "title": "Die Adresse mit dem Code einfügen",
+        "description": "**Wo der Code steht.** Nach dem Drücken von *Allow* versucht der Browser, einen Link wie `hms://redirect_url?code=...` zu öffnen, und kann nicht: Für dieses Schema ist auf diesem Rechner keine Anwendung registriert. Chrome schreibt das in die Konsole, und genau diese Zeile wird gebraucht:\n\n```\nFailed to launch 'hms://redirect_url?code=EQFEAQNaOARz0K1p%2BmR7sT4uVwXyZ0...%3D%3D&state=9f2c1ab7' because the scheme does not have a registered handler.\n```\n\n1. In den DevTools den Reiter **Console** öffnen (F12 → Console).\n2. Die Zeile suchen, die mit `Failed to launch 'hms://redirect_url?code=` beginnt.\n3. Die ganze Zeile kopieren — der Text `Failed to launch` und `because the scheme...` drumherum ist egal, den wirft die Integration weg. Die Adresse `hms://redirect_url?code=...` aus der Adresszeile funktioniert auch.\n4. Unten einfügen und **Senden** drücken.\n\nDer Code ist einmalig und einige Minuten gültig. Wird er abgelehnt, die Login-Seite aus Schritt 1 neu öffnen und den ganzen Ablauf wiederholen."
+      },
+      "reauth_confirm": {
+        "title": "Erneute Anmeldung nötig",
+        "description": "Die Sitzung von **{account}** lässt sich nicht mehr erneuern: Der refreshToken ist abgelaufen (Huawei gibt ihn für 180 Tage aus) oder wurde durch ein Abmelden widerrufen.\n\nEs muss nichts gelöscht werden: Melde dich im Browser neu an, die Integration schreibt die neuen Tokens in denselben Eintrag — Geschichte und Sensoreinstellungen bleiben erhalten.\n\n**Schritt 1.** Login-Seite öffnen: [{authorize_url}]({authorize_url})\n\n**Schritt 2.** Mobilmodus in den DevTools einschalten (**F12**, dann **Strg+Shift+M**), sonst reagiert der Knopf *Allow* nicht auf die Maus.\n\n**Schritt 3.** Die Zeile `Failed to launch 'hms://redirect_url?code=...'` aus DevTools → Console kopieren und im nächsten Schritt einfügen.\n\nEinzelheiten: {docs}"
+      }
+    },
+    "abort": {
+      "already_configured": "Dieses HUAWEI-ID-Konto ist bereits eingerichtet.",
+      "reauth_successful": "Fertig: Tokens erneuert und das Konto neu geladen.",
+      "unsupported_import": "YAML-Konfiguration wird nicht unterstützt: das Konto unter Integrationen hinzufügen."
+    },
+    "error": {
+      "no_code": "In diesem Feld ist kein Code: eine Adresse wie hms://redirect_url?code=... aus der Browser-Konsole einfügen.",
+      "invalid_code": "Huawei hat den Code abgelehnt: schon benutzt, abgelaufen, oder es hat sich ein anderes Konto angemeldet. Die Login-Seite neu öffnen und wiederholen.",
+      "cannot_connect": "Die Huawei-Cloud ist nicht erreichbar. Netzwerk prüfen und noch einmal versuchen.",
+      "unknown": "Unbekannter Fehler. Details im Home-Assistant-Journal."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Kontoeinstellungen",
+        "description": "Jedes Konto wird einzeln eingestellt. Änderungen wirken ohne Neustart von Home Assistant.",
+        "data": {
+          "api_host": "Rechenzentrum mit den Daten dieses Kontos",
+          "update_interval": "Abfrageintervall, Minuten",
+          "history_days": "Tage an Tagesdaten behalten",
+          "workout_days": "Workouts wie viele Tage zurück suchen",
+          "enable_workouts": "Workouts abfragen (getSportsDataByTime)",
+          "enable_health_metrics": "Puls, Schlaf und Stress abfragen (getHealthStat)",
+          "device_code": "deviceCode eines Geräts (0 = ganzes Konto)"
+        },
+        "data_description": {
+          "api_host": "In welche Cloud die Zeilen eines Kontos geschrieben werden, entscheidet das Land, in dem die HUAWEI ID registriert wurde; die anderen Gruppen nehmen das Token an und antworten mit nichts. Lesen alle Sensoren `unknown`, hier eine andere Gruppe versuchen. Welcher Host gefragt wird und was er geantwortet hat, stehen in den Attributen des Sensors „Wiederanmeldung in Tagen“.",
+          "update_interval": "Unter 5 Minuten bringt nichts: die App-Cloud bewegt sich nur, wenn eine Uhr oder ein Telefon synchronisiert.",
+          "history_days": "Wirkt auf die Tagessensoren; bis 30 Tage kostet weiterhin nur einen Request.",
+          "workout_days": "Workouts werden in 10-Tage-Fenstern gelesen (hartes Cloud-Limit), 30 Tage sind also drei Requests.",
+          "device_code": "/profile/device/getBindDevice listet die Codes. Der Code einer Uhr verengt die Tagessummen auf dieses Gerät.",
+          "enable_workouts": "Abschalten, wenn nie Workouts aufgezeichnet werden: das ist der langsamste Request.",
+          "enable_health_metrics": "Abschalten, wenn kein Gerät Puls oder Schlaf misst."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "steps": { "name": "Schritte heute" },
+      "distance": { "name": "Distanz heute" },
+      "calories": { "name": "Kalorien heute" },
+      "activity_duration": { "name": "Aktivität heute" },
+      "walking_duration": { "name": "Gehen heute" },
+      "active_hours": { "name": "Aktive Stunden heute" },
+      "moderate_high_intensity_minutes": { "name": "Moderate bis intensive Minuten heute" },
+      "step_goal": { "name": "Schrittziel" },
+      "resting_heart_rate": { "name": "Puls in Ruhe" },
+      "heart_rate": { "name": "Puls" },
+      "max_heart_rate": { "name": "Puls Maximum heute" },
+      "min_heart_rate": { "name": "Puls Minimum heute" },
+      "sleep_duration": { "name": "Schlaf" },
+      "sleep_deep": { "name": "Tiefschlaf" },
+      "sleep_rem": { "name": "REM-Schlaf" },
+      "sleep_light": { "name": "Leichter Schlaf" },
+      "sleep_awake": { "name": "Wach im Schlaf" },
+      "sleep_score": { "name": "Schlafbewertung" },
+      "sleep_efficiency": { "name": "Schlafeffizienz" },
+      "sleep_hrv": { "name": "HRV im Schlaf" },
+      "sleep_spo2": { "name": "SpO2 im Schlaf" },
+      "stress": { "name": "Stress" },
+      "stress_last": { "name": "Stress (letzte Messung)" },
+      "last_activity": {
+        "name": "Letzte Aktivität",
+        "state": {
+          "stairs": "Treppen",
+          "hill": "Berg / Trail",
+          "cycling": "Radfahren",
+          "running": "Laufen",
+          "walking": "Gehen",
+          "deep_sleep": "Tiefschlaf",
+          "light_sleep": "Leichter Schlaf",
+          "awake": "Wach",
+          "swimming": "Schwimmen",
+          "other": "Sonstiges",
+          "unknown": "Unbekannter Typ"
+        }
+      },
+      "last_activity_duration": { "name": "Dauer der letzten Aktivität" },
+      "last_activity_distance": { "name": "Distanz der letzten Aktivität" },
+      "last_activity_calories": { "name": "Kalorien der letzten Aktivität" },
+      "workouts": { "name": "Workouts im Zeitraum" },
+      "relogin_in": { "name": "Wiederanmeldung in Tagen" }
+    }
+  }
+}

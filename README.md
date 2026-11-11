@@ -1,256 +1,280 @@
-# Huawei Health для Home Assistant
+# Huawei Health für Home Assistant
 
-Интеграция, которая читает данные из **собственного облака приложения Huawei Health**
-(`com.huawei.health`) и создаёт сенсоры шагов, сна, пульса, стресса и тренировок.
-Телефон, часы и приложение Home Assistant для этого не нужны: нужен только браузер, в
-котором один раз за 180 дней выполняется вход в HUAWEI ID.
+Diese Integration liest aus **der eigenen Cloud der Huawei-Health-App**
+(`com.huawei.health`) und erzeugt Sensoren für Schritte, Schlaf, Puls, Stress und
+Workouts. Telefon, Uhr und die Health-App müssen dafür nicht laufen: nötig ist nur ein
+Browser, in dem alle 180 Tage einmal ein HUAWEI-ID-Login durchgeführt wird.
 
-Поддерживает **несколько аккаунтов одновременно** — каждый как отдельная запись
-интеграции, со своими токенами, своим интервалом опроса и своим набором сенсоров.
-
-> **English summary.** This is a custom Home Assistant integration for the Huawei Health
-> app's own cloud (`sportdata-drXX.things.dbankcloud.*`), not for the Health Kit API. It
-> needs no phone, no watch and no Huawei emulator. Login is browser-assisted (Huawei's
-> captcha is meant for a human), the token pair is then rotated by the integration itself
-> for 180 days. Multiple accounts = multiple config entries. Install through HACS, then
-> follow *Подключение* below — the consent button only responds to touch, so the browser
-> has to be switched to mobile device mode in DevTools.
-
----
-
-## Содержание
-
-- [Зачем ещё одна интеграция](#зачем-ещё-одна-интеграция)
-- [Что отдаёт в сенсоры](#что-отдаёт-в-сенсоры)
-- [Требования](#требования)
-- [Установка](#установка)
-- [Подключение](#подключение)
-- [Схема работы интеграции](#схема-работы-интеграции)
-- [Настройки аккаунта](#настройки-аккаунта)
-- [Несколько аккаунтов](#несколько-аккаунтов)
-- [Примеры автоматизаций](#примеры-автоматизаций)
-- [Что делать при ошибках](#что-делать-при-ошибках)
-- [Безопасность и ограничения](#безопасность-и-ограничения)
-- [Разработка и релизы](#разработка-и-релизы)
+Unterstützt werden **mehrere Konten gleichzeitig** — jedes als eigener
+Integrationseintrag, mit eigenen Tokens, eigenem Abfrageintervall und eigenem
+Sensorsatz.
+> **English summary.** *(Dieses README ist auf Deutsch; die folgende Zusammenfassung ist
+> englisch.)*
+> This is a custom Home Assistant integration for the Huawei Health app's own
+> cloud (`sportdata-drXX.things.dbankcloud.*`), **not** for the Health Kit API. It needs no
+> phone, no watch and no Huawei emulator. Login is browser-assisted (Huawei's captcha is
+> meant for a human), the token pair is then rotated by the integration itself for 180 days.
+> Multiple accounts = multiple config entries. Install through HACS, then follow *Konto
+> verbinden* below — the consent button only responds to touch, so the browser has to be
+> switched to mobile device mode in DevTools. If every sensor reads `unknown` while the
+> login sensor works, the wrong data centre is being queried: see
+> *Which data centre holds this account's data*.
 
 ---
 
-## Зачем ещё одна интеграция
+## Inhaltsverzeichnis
 
-Официальный путь («Health Kit / REST API для партнёров») требует регистрации приложения в
-AppGallery Connect, прохождения верификации Huawei и ожидания согласия пользователя на каждый
-scope; данные отдаются в другом формате и не для всех типов. Существующие интеграции
-(`huawei_health` из `custom_components`-репозиториев) обычно читают экспорт из приложения.
+- [Warum eine weitere Integration](#warum-eine-weitere-integration)
+- [Was die Sensoren liefern](#was-die-sensoren-liefern)
+- [Voraussetzungen](#voraussetzungen)
+- [Installation](#installation)
+- [Konto verbinden](#konto-verbinden)
+- [Wie die Integration arbeitet](#wie-die-integration-arbeitet)
+- [Kontoeinstellungen](#kontoeinstellungen)
+- [Mehrere Konten](#mehrere-konten)
+- [Automatisierungsbeispiele](#automatisierungsbeispiele)
+- [Fehlerbilder](#fehlerbilder)
+- [Sicherheit und Grenzen](#sicherheit-und-grenzen)
+- [Entwicklung und Releases](#entwicklung-und-releases)
 
-Здесь используется то же облако, в которое само приложение `com.huawei.health` выгружает
-синхронизированные с часов данные: контроллер `/dataQuery/*`. Протокол восстановлен из
-APK версии 16.1.6.320 (dex-код `defpackage/*`, `HealthDataCloudFactory`,
-`ThirdPartyHttpUtils`) и проверен живыми запросами. Адреса облачных хостов приложение не
-хардкодит — берёт их из GRS (Global Route Service, сервис маршрутизации HMS Core, который
-по стране аккаунта раздаёт клиенту URL дата-центров). Для аккаунтов RU это
-`*.things.dbankcloud.ru`; список хостов лежит в `assets/grs_app_global_route_config.json`.
+---
 
-Сенсоры показывают **те же числа, что приложение**, вплоть до суточных шагов: интеграция
-берёт ровно те же ответы, что и экран «Активность».
+## Warum eine weitere Integration
 
-## Что отдаёт в сенсоры
+Der offizielle Weg („Health Kit / REST API for Partners“) verlangt eine registrierte App in
+AppGallery Connect, eine Verifizierung durch Huawei und die Zustimmung des Nutzers für
+einzelne Scopes; die Daten kommen in einem anderen Format und nicht für alle Typen.
+Bestehende Integrationen (Aufzählungen in `custom_components`-Repositories) lesen
+üblicherweise einen Export aus der App.
 
-Суточные значения относятся к «сегодня» (для сна — к ночи, которая только что
-закончилась; облако помечает её днём пробуждения). Каждый сенсор несёт атрибут `date` —
-дату, за которую пришло значение.
+Diese Integration benutzt dieselbe Cloud, in die die App `com.huawei.health` ihre mit der
+Uhr synchronisierten Daten hochlädt: die Controller-Routen unter `/dataQuery/*`. Das
+Protokoll ist aus dem APK 16.1.6.320 rekonstruiert (dex-Code `defpackage/*`,
+`HealthDataCloudFactory`, `ThirdPartyHttpUtils`) und mit Live-Requests geprüft. Die App hat
+die Hostnamen nicht hartkodiert — sie holt sie von GRS (Global Route Service, der
+Routing-Dienst von HMS Core, der je Länderkennung des Kontos die URLs der Rechenzentren
+ausliefert). Für RU-Konten sind das `*.things.dbankcloud.ru`; die Hostliste liegt in
+`assets/grs_app_global_route_config.json`. Welches Rechenzentrum die Zeilen eines Kontos
+hält, ist die häufigste Fehlerquelle — dazu unten der Abschnitt
+[Welches Rechenzentrum die Daten hält](#welches-rechenzentrum-die-daten-hält).
 
-| Сенсор | Единица | Откуда |
+Die Sensoren zeigen **dieselben Zahlen wie die App**, bis hin zu den Tagesschritten: die
+Integration verarbeitet genau die Antworten, die auch der Bildschirm „Aktivität“ zeichnet.
+
+## Was die Sensoren liefern
+
+Tageswerte beziehen sich auf „heute“ (beim Schlaf auf die gerade beendete Nacht — die Cloud
+stempelt sie mit dem Tag des Aufwachens). Jeder Sensor trägt das Attribut `date` mit dem
+Datum, für das der Wert gekommen ist.
+
+| Sensor | Einheit | Woher |
 | --- | --- | --- |
-| Шаги за день | шаги | `getSportsStat` → `sportBasicInfo.steps` |
-| Дистанция за день | км | `getSportsStat` → `distance` (в ответе метры, делим на 1000) |
-| Калории за день | ккал | `getSportsStat` → `calorie` (в ответе тысячные доли ккал, делим на 1000) |
-| Активность за день | мин | `getSportsStat` → `duration` |
-| Ходьба за день | мин | `dimenDailyActivity.walkDurations` |
-| Активные часы за день | ч | `activeHourBasic.countActiveHour` |
-| Интенсивные минуты за день | мин | `exerciseTimeBasic.totalMidHighIntensity` |
-| Цель по шагам | шаги | `goalAchieveBasic.stepGoalValueStat` (выключен по умолчанию) |
-| Пульс покоя, Пульс, Max, Min | уд/мин | `getHealthStat` type 7 → `heartRateBasic` |
-| Сон, Глубокий, REM, Поверхностный, Бодрствование | мин | `getHealthStat` type 9 → `professionalSleep` |
-| Оценка сна, Эффективность, ВСР, SpO2 | баллы / % / мс | там же: `sleepScore`, `sleepEfficiency`, `lastAvgHrv`, `lastAvgSpO2` |
-| Стресс, Стресс (последний) | баллы | `getHealthStat` type 11 → `stressBasic` |
-| Последняя тренировка | enum (бег/велосипед/…) | `getSportsDataByTime`, сегменты склеены в сессию |
-| Длительность / дистанция / калории последней тренировки | мин, км, ккал | там же |
-| Тренировок за период | шт | число сессий в окне |
-| Повторный вход через, дней | дни | остаток жизни refresh-токена |
+| Schritte heute | Schritte | `getSportsStat` → `sportBasicInfo.steps` |
+| Distanz heute | km | `getSportsStat` → `distance` (im Antworten Meter, durch 1000) |
+| Kalorien heute | kcal | `getSportsStat` → `calorie` (im Antworten Tausendstel kcal, durch 1000) |
+| Aktivität heute | min | `getSportsStat` → `duration` |
+| Gehen heute | min | `dimenDailyActivity.walkDurations` |
+| Aktive Stunden heute | h | `activeHourBasic.countActiveHour` |
+| Moderate bis intensive Minuten heute | min | `exerciseTimeBasic.totalMidHighIntensity` |
+| Schrittziel | Schritte | `goalAchieveBasic.stepGoalValueStat` (standardmäßig deaktiviert) |
+| Puls in Ruhe, Puls, Max, Min | bpm | `getHealthStat` Typ 7 → `heartRateBasic` |
+| Schlaf, Tiefschlaf, REM, leichter Schlaf, wach | min | `getHealthStat` Typ 9 → `professionalSleep` |
+| Schlafbewertung, Effizienz, HRV, SpO2 | Punkte / % / ms | ebenda: `sleepScore`, `sleepEfficiency`, `lastAvgHrv`, `lastAvgSpO2` |
+| Stress, Stress (letzte Messung) | Punkte | `getHealthStat` Typ 11 → `stressBasic` |
+| Letzte Aktivität | enum (running/cycling/…) | `getSportsDataByTime`, Segment zu Session zusammengesetzt |
+| Dauer / Distanz / Kalorien der letzten Aktivität | min, km, kcal | ebenda |
+| Workouts im Zeitraum | Anzahl | Anzahl Sessions im Fenster |
+| Wiederanmeldung in Tagen | Tage | Restlaufzeit des refreshToken |
 
-Типы с нулевым значением (`lastAvgSpO2 = -1`, `avgRestingHeartRate = 0` и т. п.) — это отсутствие 
-измерений.
+Typen mit Nullwert (`lastAvgSpO2 = -1`, `avgRestingHeartRate = 0` usf.) bedeuten: es gibt
+keine Messung, nicht „Messung null“.
 
-## Требования
+Die Anzeigenamen der Sensoren und die Beschriftungen im Einstellungsdialog kommen aus
+[`translations/en.json`](custom_components/huawei_health/translations/en.json) und
+`ru.json`. Eine `de.json` gibt es noch nicht — bei deutscher HA-Oberfläche erscheint diese
+Beschriftung daher englisch.
 
-- Home Assistant **2024.12** или новее.
-- Аккаунт HUAWEI ID, в котором есть синхронизированные данные (то есть приложение Huawei
-  Health хотя бы раз сливало данные в облако).
-- Компьютер с браузером (Chrome/Chromium или Firefox) для входа.
-- Интеграция не ставит зависимостей из pip: только стандартная библиотека Python.
+## Voraussetzungen
 
-## Установка
+- Home Assistant **2024.12** oder neuer.
+- Ein HUAWEI-ID-Konto, in dem synchronisierte Daten liegen (die Health-App muss also
+  mindestens einmal Daten in die Cloud hochgeladen haben).
+- Ein Rechner mit Browser (Chrome/Chromium oder Firefox) für den Login.
+- Die Integration installiert keine PyPI-Abhängigkeiten: nur Python-Standardbibliothek.
 
-### HACS
+## Installation
 
-1. Откройте **HACS → ⋮ (три точки) → Custom repositories**.
-2. Type: `Integration`, Repository: `https://github.com/and7ey/huawei_health`, нажмите **Add**.
-3. В списке поиском найдите **Huawei Health** → синяя кнопка **Download**.
-4. Перезапустите Home Assistant (**Settings → System → кнопка Выключения → Restart Home Assistant** — не «перезагрузка конфигурации»,
-   а именно перезапуск системы).
+### Über HACS
 
-### Вручную
+1. **HACS → ⋮ (drei Punkte) → Custom repositories** öffnen.
+2. Type: `Integration`, Repository: `https://github.com/and7ey/huawei_health`, **Add**.
+3. In der Liste nach **Huawei Health** suchen → blauer Knopf **Download**.
+4. Home Assistant neu starten (**Einstellungen → System → Knopf „Herunterfahren“ →
+   Home Assistant neu starten** — nicht „Konfiguration neu laden“, sondern ein
+   Systemneustart).
 
-Скачайте `huawei_health.zip` из [последнего релиза](../../releases), распакуйте так, чтобы в
-конфигурационной папке Home Assistant появился путь
-`custom_components/huawei_health/manifest.json`, и перезапустите Home Assistant.
+### Manuell
 
-## Подключение
+`huawei_health.zip` aus dem [letzten Release](../../releases) herunterladen und so
+entpacken, dass im Konfigurationsordner von Home Assistant der Pfad
+`custom_components/huawei_health/manifest.json` entsteht, danach Home Assistant neu starten.
 
-Вход в HUAWEI ID — единственное место, где нужен человек: страница согласия закрыта
-Huawei-капчей. Всё остальное (обмен кода на токены, хранение, ротация, опрос) автоматизировано.
+## Konto verbinden
 
-### Шаг 1. Создайте запись интеграции
+Der Login ist die einzige Stelle, an der ein Mensch nötig ist: die
+Zustimmungsseite sitzt hinter Huaweis Captcha. Alles andere (Tausch des Codes gegen Tokens,
+Ablage, Rotation, Abfragen) läuft automatisch.
 
-**Настройки → Устройства и службы → Интеграции → Добавить интеграцию → Huawei Health**.
+### Schritt 1. Den Integrationseintrag anlegen
 
-Первый экран показывает готовую ссылку входа — она генерируется под конкретного пользователя
-(со своими `state` и `scope`), так что копировать её из README не нужно:
+**Einstellungen → Geräte und Dienste → Integrationen → Integration hinzufügen →
+Huawei Health**.
+
+Der erste Bildschirm zeigt die fertige Login-URL — sie wird pro Vorgang neu erzeugt (mit
+eigenem `state` und eigenen `scope`), man muss sie also nicht aus diesem README
+kopieren:
 
 ```text
 https://oauth-login.cloud.huawei.com/oauth2/v3/authorize?client_id=10414141
   &response_type=code&access_type=offline&display=touch&scope=...
-  &redirect_uri=hms%3A%2F%2Fredirect_url&state=<8 случайных символов>&lang=en&prompt=consent
+  &redirect_uri=hms%3A%2F%2Fredirect_url&state=<8 zufällige Zeichen>&lang=en&prompt=consent
 ```
 
-Нажмите **Отправить** — интеграция перейдёт на экран, где нужно вставить код.
+**Senden** drücken — die Integration kommt auf den Bildschirm, auf dem der Code eingefügt
+wird.
 
-### Шаг 2. Откройте ссылку в браузере и включите мобильный режим
+### Schritt 2. Die URL im Browser öffnen und den Mobilmodus einschalten
 
-Это критично: **кнопка «Разрешить»/«Allow» на странице согласия работает только на
-касание (touch)**. Обычный клик мышью по ней не сработает — страница не
-перезагружается, ошибок не показывает. Поэтому браузер надо перевести в режим
-мобильного устройства.
+Das ist der entscheidende Punkt: **der Knopf „Allow“/„Zulassen“ auf der
+Zustimmungsseite reagiert nur auf Touch.** Ein normaler Mausklick darauf funktioniert nicht —
+die Seite lädt nicht neu, sie zeigt auch keinen Fehler an. Der Browser muss deshalb in den
+Modus eines mobilen Geräts wechseln.
 
-Пошагово для **Chrome** (то же самое в Яндекс.Браузере, Edge, Opera — они на Chromium):
+Ablauf in **Chrome** (gleich in Yandex Browser, Edge, Opera — alle auf Chromium):
 
-1. Откройте ссылку входа в новой вкладке и залогиньтесь в HUAWEI ID (телефон или e-mail +
-   пароль). Если Huawei просит подтверждение на устройстве или по почте — подтвердите.
-2. Нажмите **F12**. Панель разработчика (DevTools) обычно появляется справа или снизу.
-   Эквивалентные способы: меню **⋮ → More tools → Developer tools**, либо
-   **Ctrl+Shift+I** (на macOS **Cmd+Option+I**).
-3. В DevTools нажмите **Ctrl+Shift+M** (macOS: **Cmd+Shift+M**). Это кнопка
-   **Toggle device toolbar** — она самая левая в верхней панели DevTools, выглядит как
-   прямоугольник со смартфоном. После нажатия над страницей появляется ещё одна
-   полоса, а сама страница рамками показывает, что она внутри «устройства».
-4. В этой полосе слева сверху — выпадающий список **Dimensions: Not responsive**.
-   Выберите в нём конкретное устройство, например **iPhone 12 Pro** или **Pixel 7**
-   (пункт **Responsive** тоже работает, но с реальным профилем устройства меньше шансов
-   получить десктопную вёрстку).
-5. Нажмите **Reload** — круговая стрелка в той же полосе DevTools (или **F5**). Страница
-   должна перезагрузиться *после* включения мобильного режима: только тогда Huawei отдаст
-   мобильную версию, где кнопка согласия — touch-элемент.
-   Если страница изменила внешний вид (стала узкой, кнопка стала крупной плашкой) — всё
-   правильно.
-6. Прокрутите страницу вниз до кнопки **«Разрешить» / «Allow»** и нажмите её. Курсор в
-   мобильном режиме выглядит как кружок и работает как палец — одного нажатия достаточно.
+1. Die Login-URL in einem neuen Tab öffnen und in der HUAWEI ID anmelden (Telefonnummer
+   oder E-Mail plus Passwort). Fragt Huawei nach einer Bestätigung auf einem Gerät oder per
+   Mail, bestätige sie.
+2. **F12** drücken. Das DevTools-Fenster erscheint meist rechts oder unten. Gleichwertig:
+   Menü **⋮ → Weitere Tools → Entwicklertools** oder **Strg+Shift+I** (macOS
+   **Cmd+Option+I**).
+3. In den DevTools **Strg+Shift+M** (macOS **Cmd+Shift+M**) drücken. Das ist
+   **Toggle device toolbar**, das ganz linke Symbol in der oberen Leiste der DevTools, ein
+   Rechteck mit Telefon. Danach erscheint über der Seite eine zusätzliche Leiste, und die
+   Seite zeigt mit ihrem Rahmen, dass sie „in einem Gerät“ steckt.
+4. In dieser Leiste oben links ist das Auswahlfeld **Dimensions: Not responsive**. Darin ein
+   konkretes Gerät wählen, zum Beispiel **iPhone 12 Pro** oder **Pixel 7**
+   (**Responsive** geht auch, mit einem echten Geräteprofil wird die Wahrscheinlichkeit
+   einer Desktop-Ansicht aber kleiner).
+5. **Reload** drücken — der Kreispfeil in derselben DevTools-Leiste (oder **F5**). Die
+   Seite muss *nach* dem Umschalten neu geladen werden: erst dann liefert Huawei die
+   Mobilversion, in der der Zustimmungs-Knopf ein Touch-Element ist. Hat die Seite ihr
+   Aussehen geändert (schmal, der Knopf eine große Fläche) — richtig.
+6. Bis zum Knopf **„Allow“ / „Zulassen“** scrollen und ihn drücken. Der Cursor ist im
+   Mobilmodus ein Kreis und arbeitet wie ein Finger: ein Druck genügt.
 
-В **Firefox** вместо DevTools-полосы: **F12 → значок телефона/планшета (Ctrl+Shift+M)** —
-дальше всё так же.
+In **Firefox** statt der DevTools-Leiste: **F12 → Telefon-/Tablett-Symbol
+(Strg+Shift+M)** — danach genauso.
 
-Если после нажатия «Разрешить» ничего не происходит — значит мобильный режим не
-применился к уже загруженной странице: повторите пункт 5 (Reload) и нажми ещё раз.
+Passiert nach „Allow“ nichts, wurde der Mobilmodus auf die bereits geladene Seite nicht
+angewendet: Punkt 5 (Reload) wiederholen und noch mal drücken.
 
-### Шаг 3. Заберите код из консоли браузера
+### Schritt 3. Den Code aus der Browser-Konsole holen
 
-После разрешения браузер пытается открыть `hms://redirect_url?code=...`. Это адрес
-приложения Huawei Health на телефоне; на компьютере такой схемы никто не зарегистрировал,
-поэтому переход не происходит, а Chrome пишет об этом в консоль. **Нужна именно эта
-строка** — в ней и есть код:
+Nach der Zulassung versucht der Browser, `hms://redirect_url?code=...` zu öffnen. Das ist
+die Adresse der Health-App auf dem Telefon; auf dem Rechner ist für dieses Schema kein
+Handler registriert, der Sprung bleibt aus und Chrome schreibt das in die Konsole. **Genau
+diese Zeile wird gebraucht** — sie enthält den Code:
 
 ```text
 Failed to launch 'hms://redirect_url?code=EQFEAQNaOARz0K1p%2BmR7sT4uVwXyZ0abcDEFghIJ%2FklMNopqrSTuvwXYZ0123456789%3D%3D&state=9f2c1ab7' because the scheme does not have a registered handler.
 ```
 
-Как её найти и скопировать:
+So finden und kopieren:
 
-1. **F12 → вкладка Console**. Строка обычно уже там (жёлтая или красная).
-   В фильтре слева можно набрать `Failed to launch`, чтобы не искать глазами.
-2. Кликните по строке правой кнопкой → **Copy text** (или выделите её целиком и **Ctrl+C**).
-3. В **Firefox** вместо консоли проще смотреть **F12 → вкладка Network → первый запрос с
-   кодом 302 → заголовок ответа `Location`**: там та же ссылка `hms://redirect_url?code=...`.
-4. Вставьте скопированное значение в поле интеграции и нажмите **Отправить**. Лишний текст
-   (`Failed to launch '`, `because the scheme...`, кавычки) интеграция отбрасывает сама —
-   код вырезается из query-строки и обязательно раскодируется, потому что он
-   percent-encoded и примерно 360 символов длиной (`%2B`, `%2F`, `%3D%3D` внутри
-   оставлять как есть, вручную ничего «чинить» не надо).
+1. **F12 → Reiter Console**. Die Zeile steht normalerweise schon dort (gelb oder rot). Im
+   Filter links kann `Failed to launch` eingegeben werden, um nicht suchen zu müssen.
+2. Mit Rechtsklick auf die Zeile → **Copy text** (oder ganz markieren und **Strg+C**).
+3. In **Firefox** statt der Konsole einfacher: **F12 → Reiter Network → der erste Request
+   mit Status 302 → Antwortheader `Location`** — dort steht dieselbe
+   `hms://redirect_url?code=...`-Adresse.
+4. Den kopierten Text in das Feld der Integration einfügen und **Senden** drücken. Über-
+   und Untertext (`Failed to launch '`, `because the scheme...`, Anführungszeichen) wirft
+   die Integration selbst weg — der Code wird aus der Query-Zeile geschnitten und
+   zwingend decodiert, weil er percent-encoded und rund 360 Zeichen lang ist (`%2B`, `%2F`,
+   `%3D%3D` darin bleiben unverändert, von Hand ist nichts zu „reparieren“).
 
-**Код одноразовый и живёт несколько минут.** Если интеграция пишет, что Huawei его
-отклонил, значит истёк срок, либо он уже был использован: откройте страницу входа заново по
-новой ссылке (интеграция сгенерирует её заново на шаге «Повторить вход») и повторите
-процедуру.
+**Der Code ist einmalig und einige Minuten gültig.** Meldet die Integration, Huawei habe ihn
+abgelehnt, ist er abgelaufen oder war schon benutzt: die Login-Seite über eine neue URL neu
+öffnen (die Integration erzeugt sie auf dem Schritt „Erneut anmelden“ neu) und den Ablauf
+wiederholen.
 
-### Шаг 4. Проверьте результат
+### Schritt 4. Das Ergebnis prüfen
 
-Интеграция обменяет код на пару токенов, определит аккаунт по `uid`, сама найдёт облако,
-где лежат данные аккаунта (об этом ниже), и создаст запись с названием по нику HUAWEI ID.
-Через 10–30 секунд появятся сенсоры. Название записи
-(ник аккаунта HUAWEI ID) становится «устройством», а `entity_id` собираются из него и ключа сенсора:
-для аккаунта `andrey` это `sensor.andrey_steps`, `sensor.andrey_sleep_duration`,
-`sensor.andrey_last_activity` и так далее — точные id видны на странице устройства
-(**Настройки → Интеграции → Huawei Health → запись**).
+Die Integration tauscht den Code gegen das Tokenpaar, erkennt das Konto an der `uid`, sucht
+selbst das Rechenzentrum, in dem die Daten des Kontos liegen (darüber unten mehr), und
+legt den Eintrag mit dem Nicknamen der HUAWEI ID als Namen an. Nach 10–30 Sekunden
+erscheinen die Sensoren. Der Eintragsname (Nickname der HUAWEI ID) wird zum „Gerät“, die
+`entity_id` setzen sich aus ihm und dem Sensor-Schlüssel zusammen: für das Konto `andrey`
+etwa `sensor.andrey_steps`, `sensor.andrey_sleep_duration`, `sensor.andrey_last_activity` —
+die genauen IDs stehen auf der Geräteseite
+(**Einstellungen → Integrationen → Huawei Health → Eintrag**).
 
-Разница между `unknown` и `unavailable` много значит: `unknown` при живом «Повторный вход
-через, дней» = 180 — это облако отвечает успешно, но пустотой (чужая GRS-группа или аккаунт
-без данных), `unavailable` — облако отвечает ошибкой либо конкретный тип данных в этом
-аккаунте не заполнен (например, нет устройства, измеряющего SpO2). Что именно опрашивалось
-и что пришло, видно в атрибутах сенсора «Повторный вход через, дней».
+Der Unterschied zwischen `unknown` und `unavailable` ist wichtig: **`unknown` bei lebendem
+„Wiederanmeldung in Tagen“ = 180** heißt, die Cloud antwortet erfolgreich, aber leer — die
+falsche GRS-Gruppe wird abgefragt oder das Konto hat keine Daten. **`unavailable`** heißt,
+die Cloud antwortet mit einem Fehler, oder dieser Datentyp ist in diesem Konto nicht
+gefüllt (zum Beispiel misst kein Gerät SpO2). Was genau gefragt wurde und was
+zurückkam, steht in den Attributen des Sensors „Wiederanmeldung in Tagen“.
 
-## Схема работы интеграции
+## Wie die Integration arbeitet
 
-### Общий поток
+### Gesamtablauf
 
 ```mermaid
 sequenceDiagram
-    participant U as Человек
-    participant B as Браузер
+    participant U as Mensch
+    participant B as Browser
     participant F as Config flow (HA)
     participant O as oauth-login.cloud.huawei.com
-    participant C as healthcommon-drXX (сессии)
-    participant D as sportdata-drXX (данные)
-    U->>F: «Отправить» на первом шаге
-    F->>F: authorize_url(): client_id=10414141, redirect_uri=hms://redirect_url, state=rand
-    F-->>U: ссылка входа + инструкция (mobile mode)
-    U->>B: открывает ссылку, включает DevTools → mobile, логинится
+    participant C as healthcommon-drXX (Sitzung)
+    participant D as sportdata-drXX (Daten)
+    U->>F: „Senden“ im ersten Schritt
+    F->>F: authorize_url(): client_id=10414141, redirect_uri=hms://redirect_url, state=zufall
+    F-->>U: Login-URL + Anleitung (mobile mode)
+    U->>B: öffnet die URL, schaltet DevTools auf Mobilgerät, meldet sich an
     B->>O: authorize → consent
     O-->>B: 302 hms://redirect_url?code=...
-    B-->>B: «нет обработчика схемы», строка оседает в Console
-    U->>F: вставляет строку из консоли
+    B-->>B: „no handler for scheme“, die Zeile landet in der Console
+    U->>F: fügt die Konsolenzeile ein
     F->>C: POST /commonAbility/userAccessToken/obtain {authorizationCode, appId}
     C-->>F: accessToken + refreshToken + uid
-    F->>F: async_update_entry(entry, data=токены) → core.config_entries
-    F->>D: первый опрос (проверка доступности)
-    loop каждые update_interval минут
-        D-->>F: суточные суммы, пульс/сон/стресс, тренировки
+    F->>D: Suche nach dem Rechenzentrum des Kontos (max. 4 Gruppen x 2 Fenster)
+    F->>F: async_update_entry(entry, data=Tokens + api_host) → core.config_entries
+    F->>D: erste Abfrage (Erstaktualisierung)
+    loop alle update_interval Minuten
+        D-->>F: Tagessummen, Puls/Schlaf/Stress, Workouts
     end
 ```
 
-### Модули
+### Module
 
-| Файл | Ответственность |
+| Datei | Zuständigkeit |
 | --- | --- |
-| `const.py` | адреса контроллеров, пути эндпоинтов, id типов спорта/метрик, коды ошибок, константы HA |
-| `client.py` | протокол: HTTP на stdlib-`urllib`, заголовки, тело запроса, ротация, парсинг ответов. Ни одного импорта Home Assistant |
-| `config_flow.py` | ссылка входа, приём вставленного кода, обмен на токены, уникальность аккаунта, повторный вход, настройки |
-| `coordinator.py` | `DataUpdateCoordinator`: опрос трёх семейств данных в воркер-потоке, частичные ошибки, снимок для сенсоров |
-| `__init__.py` | сборка клиента, проверка записи, сохранение обновлённых токенов обратно в запись, перезагрузка при смене настроек |
-| `entity.py` | общий предок: одно сервисное «устройство» на аккаунт |
-| `sensor.py` | описания сенсоров и извлечение из снимка |
+| `const.py` | Adressen der Controller, Endpfade, IDs der Sport-/Metriktypen, Fehlercodes, Konstanten für HA |
+| `client.py` | Protokoll: HTTP über `urllib` der Standardbibliothek, Header, Requestbody, Rotation, Antworten parsen, Regionssuche. Kein einziger Import von Home Assistant |
+| `config_flow.py` | Login-URL, Annahme des eingefügten Codes, Tausch gegen Tokens, Regionsuche beim Anlegen, Eindeutigkeit des Kontos, erneute Anmeldung, Einstellungen |
+| `coordinator.py` | `DataUpdateCoordinator`: die drei Datenfamilien im Worker-Thread abfragen, Teilergebnisse und Fehler, Snapshot für die Sensoren, Diagnosefelder |
+| `__init__.py` | Client bauen, Region festhalten, rotierte Tokens zurückschreiben, Neuladen bei geänderten Einstellungen oder gewechselter Region |
+| `entity.py` | gemeinsame Basisklasse: ein „Service-Gerät“ pro Konto |
+| `sensor.py` | Sensorbeschreibungen und das Herausholen aus dem Snapshot |
+| `tools/probe.py` | Diagnose eines Kontos vom Terminal aus, ohne Home Assistant |
 
-### Аутентификация: как именно ходят запросы
+### Authentifikation: wie die Requests genau laufen
 
-Токен в этом облаке — **не только заголовок**. Приложение (`Suggestion_CloudFactory` /
-`gkp.java`) кладёт его и в JSON-тело, и в заголовки, и облако требует именно такое:
+Das Token ist in dieser Cloud **nicht nur ein Header**. Die App (`Suggestion_CloudFactory` /
+`gkp.java`) legt es ins JSON-Body **und** in die Header, und die Cloud verlangt genau diese
+Kombination:
 
 ```json
 {
@@ -269,159 +293,169 @@ x-version: and_health_16.1.6.320
 Content-Type: application/json;charset=UTF-8
 ```
 
-Пара живёт на одном контроллере (`healthcommon-drXX`), данные — на другом
-(`sportdata-drXX`); в GRS-таблице это две разные записи маршрутизации —
-`domainHealthCloudCommon` против `healthCloudUrl`.
+Das Tokenpaar lebt auf einem Controller (`healthcommon-drXX`), die Daten auf einem anderen
+(`sportdata-drXX`); in der GRS-Tabelle sind das zwei verschiedene Routen —
+`domainHealthCloudCommon` gegenüber `healthCloudUrl`.
 
-### Жизненный цикл токенов
+### Lebensdauer der Tokens
 
-- `authorizationCode` (из браузера) → `POST /commonAbility/userAccessToken/obtain` →
-  `accessToken` + `refreshToken` + `uid`. `siteId` в ответе может не быть — на чтение это
-  не влияет.
-- `accessToken` живёт десятки минут. Перед каждым опросом интеграция сравнивает
-  `expires_at` с текущим временем и, если до истекания меньше 2 минут, ротирует сама:
-  `POST /commonAbility/userAccessToken/refresh` с **числовым** `appId=10414141` (не
-  именем пакета).
-- Ротация **убивает предыдущий accessToken** и отдаёт тот же `refreshToken` — поэтому
-  новый `accessToken` немедленно записывается в `entry.data`
+- `authorizationCode` (aus dem Browser) → `POST /commonAbility/userAccessToken/obtain` →
+  `accessToken` + `refreshToken` + `uid`. `siteId` kann in der Antwort fehlen — fürs Lesen
+  ist das ohne Wirkung.
+- `accessToken` lebt einige Dutzend Minuten. Vor jeder Abfrage vergleicht die Integration
+  `expires_at` mit der jetzigen Zeit und rotiert, wenn weniger als 2 Minuten bleiben:
+  `POST /commonAbility/userAccessToken/refresh` mit **zahlendem** `appId=10414141` (nicht
+  dem Paketnamen).
+- Die Rotation **tötet den vorherigen accessToken** und gibt denselben `refreshToken`
+  zurück — der neue `accessToken` wird deshalb sofort in `entry.data` geschrieben
   (`hass.config_entries.async_update_entry`).
-- Ответ `resultCode` 1002/1004 («токен не принят») означает, что ротацию пары уже выполнило
-  само Health-приложение на телефоне: интеграция ротирует токен и повторяет запрос один раз.
-- `refreshToken` живёт 180 дней (`REFRESH_TOKEN_INTERVAL = 15552000000` мс). После этого
-  остаётся только вход в браузере: интеграция ловит `20020003`, бросает
-  `ConfigEntryAuthFailed`, и HA показывает карточку **Настроить** — это тот же поток
-  входа, только без создания новой записи.
-- Сенсор **«Повторный вход через, дней»** показывает остаток refresh-токена, так что
-  приближение даты можно поймать автоматизацией.
+- `resultCode` 1002/1004 („Token nicht akzeptiert“) heißt, dass die Health-App auf dem
+  Telefon die Paarrotation schon selbst gemacht hat: die Integration rotiert und wiederholt
+  den Request genau einmal.
+- `refreshToken` lebt 180 Tage (`REFRESH_TOKEN_INTERVAL = 15552000000` ms). Danach hilft nur
+  der Browser-Login: die Integration fängt `20020003`, wirft `ConfigEntryAuthFailed`, und HA
+  zeigt die Karte **Konfigurieren** — derselbe Login-Ablauf, ohne neuen Eintrag.
+- Der Sensor **„Wiederanmeldung in Tagen“** zeigt die Restlaufzeit des refreshToken, das
+  Nahterücken lässt sich automatisieren.
 
-### Что читается при опросе
+### Was bei einer Abfrage gelesen wird
 
-| Шаг | Эндпоинт | Формат времени |
+| Schritt | Endpunkt | Zeitformat |
 | --- | --- | --- |
-| Суточные суммы | `/dataQuery/sport/v2/getSportsStat` | `startTime`/`endTime` — числа `YYYYMMDD` |
-| Пульс, сон, стресс, интенсивность | `/dataQuery/health/getHealthStat` (`types: [7,9,11,12]`) | `YYYYMMDD` |
-| Тренировки | `/dataQuery/sport/getSportsDataByTime` (`queryType: 1`, `dataType: 2`) | `YYYYMMDD`, окно **не больше 10 дней** |
+| Tagessummen | `/dataQuery/sport/v2/getSportsStat` | `startTime`/`endTime` als Zahlen `YYYYMMDD` |
+| Puls, Schlaf, Stress, Intensität | `/dataQuery/health/getHealthStat` (`types: [7,9,11,12]`) | `YYYYMMDD` |
+| Workouts | `/dataQuery/sport/getSportsDataByTime` (`queryType: 1`, `dataType: 2`) | `YYYYMMDD`, Fenster **höchstens 10 Tage** |
 
-Что учтено:
+Berücksichtigt:
 
-1. `*ByTime` отвечает `1001` на окно шире 10 календарных дней — поэтому 30 дней
-   разбираются на окна `day_windows()`, а записи из окон дедуплицируются по `dataId`.
-2. Секундные метки времени облако не принимает (только `YYYYMMDD` для `queryType: 1` и
-   миллисекунды для `queryType: 2`).
-3. `calorie` приходит в 0.001 ккал, `distance` — в метрах, `duration` — в минутах;
-   `recordDay` — это `YYYYMMDD`.
+1. `*ByTime` antwortet mit `1001` auf ein Fenster über 10 Kalendertage — 30 Tage werden
+   deshalb von `day_windows()` zerlegt, und die Sätze aus den Fenstern werden über `dataId`
+   dedupliziert.
+2. Sekundentimecodes akzeptiert die Cloud nirgends (nur `YYYYMMDD` für `queryType: 1` und
+   Millisekunden für `queryType: 2`).
+3. `calorie` kommt in Tausendstel kcal, `distance` in Metern, `duration` in Minuten;
+   `recordDay` ist `YYYYMMDD`.
 
-### Как собираются тренировки
+### Wie Workouts entstehen
 
-`getSportsDataByTime` отдаёт **не тренировки, а поминутные сегменты**, и каждый сегмент
-присылает каждое устройство, которое его видело (часы и телефон — два комплекта одной
-поездки). Поэтому (`client.sport_sessions`):
+`getSportsDataByTime` liefert **keine Workouts, sondern Minuten-Segmente**, und jedes
+Gerät, das eine Minute gesehen hat, schickt ihr Exemplar davon (Uhr und Telefon — zwei
+Sätze derselben Fahrt). Deshalb (`client.sport_sessions`):
 
-1. сегменты группируются по `sportType`;
-2. внутри типа на каждую минуту остаётся один записи — тот, где больше работы
-   (дистанция, шаги, калории);
-3. соседние минуты склеиваются в сессию, если разрыв не больше 15 минут;
-4. сессия отдаёт длительность, дистанцию, калории, число сегментов и `deviceCode`.
+1. Segmente nach `sportType` gruppieren;
+2. pro Typ und Minute den Satz mit der größten Leistung behalten
+   (Distanz, Schritte, Kalorien);
+3. benachbarte Minuten zu einer Session verbinden, wenn der Abstand höchstens 15 Minuten
+   beträgt;
+4. die Session liefert Dauer, Distanz, Kalorien, Segmentanzahl und `deviceCode`.
 
-Именно поэтому «Последняя тренировка» совпадает с приложением, а сумма сырых сегментов —
-нет.
+Darum stimmt „Letzte Aktivität“ mit der App überein, die Summe der Rohsegmente nicht.
 
-### Опрос, ошибки, стоимость
+### Abfrage, Fehler, Kosten
 
-- Опрос идёт в `async_add_executor_job`: клиент синхронный и не тянет `aiohttp`.
-- Три семейства данных опрашиваются независимо. Если одно падает (аккаунт без часов
-  вообще, у облака просадка), остальные всё равно обновляются, а тексты ошибок собираются
-  в атрибут `read_errors`. Пустой, но успешный ответ (`resultCode 0`, ноль строк)
-  **не** считается ошибкой опроса: он попадает в `notice` и в журнал `WARNING`, потому что
-  именно так отвечает чужая GRS-группа, а сенсор с объяснением должен продолжать
-  обновляться.
-- `HuaweiAuthError` (1002/1004/1005/20010004/20020001/20020003) никогда не
-  «пережёвывается»: он уходит в `ConfigEntryAuthFailed`, и HA рисует карточку повторного
-  входа.
-- Полный цикл при значениях по умолчанию: **три POST-запроса на аккаунт каждые 15 минут**.
-  С 30-ю днями истории количество запросов не растёт — растёт только ответ.
+- Abgefragt wird im `async_add_executor_job`: der Client ist synchron und zieht kein
+  `aiohttp` rein.
+- Die drei Datenfamilien werden unabhängig abgefragt. Fällt eine aus (Konto ohne Uhr,
+  Aussetzer der Cloud), aktualisieren die anderen trotzdem, und die Fehlertexte sammeln
+  sich im Attribut `read_errors`. Eine **leere, aber erfolgreiche** Antwort
+  (`resultCode 0`, null Sätze) ist **keine** Abfragestörung: sie landet als `notice` im
+  Snapshot und als `WARNING` im Journal, weil genau das die Antwort einer fremden GRS-Gruppe
+  ist — und der Sensor mit der Erklärung muss weiter aktualisieren können.
+- `HuaweiAuthError` (1002/1004/1005/20010004/20020001/20020003) wird nie
+  „heruntergeschluckt“: er geht als `ConfigEntryAuthFailed` an HA, und HA malt die Karte
+  für die erneute Anmeldung.
+- Der volle Zyklus mit den Standardwerten: **drei POST pro Konto alle 15 Minuten**. Bei
+  30 Tagen Geschichte wächst die Zahl der Requests nicht — nur die Antwort.
 
-### Какое облако держит данные аккаунта
+### Welches Rechenzentrum die Daten hält
 
-Данные читаются с `sportdata-drXX` / `healthdata…` — их четыре, по одной GRS-группе
-(`const.APP_HOSTS`). В какое из них попадают строки аккаунта, решает **страна, указанная
-при регистрации HUAWEI ID**; в токене этой информации нет ни в каком виде. Чужая группа
-принимает валидный токен и отвечает **пустым списком, а не ошибкой**: сенсоры при этом
-не `unavailable`, а `unknown`, и единственное число, которое остаётся живым, — «Повторный
-вход через, дней». Это самый частый сценарий «всё подключилось, но данных нет».
+Die Daten liegen auf `sportdata-drXX` / `healthdata…` — vier Stück, eins pro GRS-Gruppe
+(`const.APP_HOSTS`). In welches davon die Zeilen eines Kontos geschrieben werden, entscheidet
+das **Land, das bei der Registrierung der HUAWEI ID angegeben wurde**; im Tokenpair steht
+diese Information in keiner Form. Eine fremde Gruppe nimmt das gültige Token an und antwortet
+mit **leerer Liste statt Fehler**: Die Sensoren sind dann nicht `unavailable`, sondern
+`unknown`, und die einzige Zahl, die lebendig bleibt, ist „Wiederanmeldung in Tagen“ (180).
+Das ist der häufigste Fall von „alles angemeldet, Gerät da, aber keine Daten“.
 
-Поэтому при создании записи (и при каждом включении записи, где регион не задан вручную)
-интеграция опрашивает все четыре группы: сначала окно в 7 дней, потом один проход за
-30 днями — аккаунт, часы которого давно не синхронизировались, пуст и в своём облаке.
-Первая группа, отдавшая строки, запоминается в `entry.data` (`api_host`). Проверка идёт
-по обоим семействам (`getSportsStat` **и** `getHealthStat`): в аккаунте могут быть пульс и
-сон при пустой таблице активности, и наоборот. На каждый хост — короткий таймаут
-(`DISCOVERY_TIMEOUT`), иначе недоступная группа вешает настройку на минуты; вердикт каждого
-хоста уходит в `WARNING` журнала, а выбор — в `INFO`.
+Deshalb fragt die Integration beim Anlegen des Eintrags (und bei jedem Einschalten eines
+Eintrags, für den keine Region gesetzt ist) alle vier Gruppen ab: zuerst ein Fenster von
+7 Tagen, dann ein Durchgang über 30 Tage — ein Konto, dessen Uhr lange nicht synchronisiert
+wurde, ist auch in seiner eigenen Cloud leer. Die erste Gruppe mit Zeilen wird in
+`entry.data` unter `api_host` gemerkt. Gezählt werden **beide** Familien
+(`getSportsStat` **und** `getHealthStat`): ein Konto kann Puls und Schlaf haben bei leerer
+Aktivitätstabelle und umgekehrt; nur `getSportsStat` zu zählen würde so ein Konto für
+„synchronisiert nirgends“ halten und die Suche in eine andere Gruppe schicken. Pro Host gilt
+ein kurzer Timeout (`DISCOVERY_TIMEOUT`), sonst hängt eine nicht erreichbare Gruppe die
+Einrichtungsphase minutenlang fest; das Urteil jeder Gruppe steht im `WARNING` des Journals,
+die Wahl im `INFO`. Eine erneute Suche beim erneuten Login unterbleibt, wenn die Region schon
+feststeht — sonst würde sie eine von Hand gewählte Gruppe überschreiben.
 
-Регион можно задать руками: **Настройки → Интеграции → Huawei Health → ⋮ → Настройки →
-Облако, где лежат данные аккаунта**. Значение «определить автоматически» стирает
-сохранённый адрес, и при следующем включении запись опять пройдёт все группы.
+Die Region lässt sich von Hand setzen: **Einstellungen → Integrationen → Huawei Health →
+⋮ → Konfigurieren → „Data centre holding this account“** (die Beschriftung kommt aus
+`translations/en.json`, da es keine `de.json` gibt). Die Auswahl
+„Automatically find which cloud has the data“ löscht den gespeicherten Address — sowohl in
+`options` als auch in `entry.data` — und der nächste Ladevorgang geht wieder durch alle
+Gruppen.
 
-Если пустой ответ пришёл от уже выбранного облака, он не считается ошибкой опроса
-(`UpdateFailed` не бросается): иначе атрибуты с объяснением перестали бы обновляться.
-Вместо этого в атрибутах сенсора «Повторный вход через, дней» появляются поля, по которым
-причины различаются:
+Bleibt die Antwort der schon gewählten Cloud leer, ist das kein `UpdateFailed`: sonst würden
+die Attribute, die die Erklärung enthalten, nicht mehr aktualisiert. Stattdessen stehen im
+Sensor „Wiederanmeldung in Tagen“ Felder, mit denen sich die Ursachen trennen lassen:
 
-| Атрибут | Что им проверяют |
+| Attribut | Womit geprüft |
 | --- | --- |
-| `data_host` | то ли облако опрашивается (страна HUAWEI ID в настройках аккаунта Huawei) |
-| `data_source` | какой `dataSource` подставлен в запрос (приложение шлёт 2) |
-| `device_code` | не сужен ли запрос до одного устройства |
-| `bound_devices` | список `deviceCode` + имени из `getBindDevice`: device есть, строк нет → чужая группа |
-| `sync_ledger` | что облако вообще когда-либо принимало (`getSyncVersions`); пусто → аккаунт туда не синхронизируется |
-| `day_rows` / `workout_rows` / `read_errors` | сколько пришло и с какими `resultCode` по каждому семейству |
-| `notice` | вывод прямо здесь: какой хост за сколько дней ничего не ответил |
+| `data_host` | wird die richtige Cloud gefragt? Das Land der HUAWEI ID steht in den Kontoeinstellungen bei Huawei |
+| `data_source` | welcher `dataSource` im Request stand (die App schickt 2) |
+| `device_code` | ist die Abfrage auf ein einzelnes Gerät verengt? |
+| `bound_devices` | `deviceCode` + Name aus `getBindDevice`: Gerät gelistet, aber keine Zeilen → fremde Gruppe |
+| `sync_ledger` | was die Cloud jemals empfangen hat (`getSyncVersions`); leer → das Konto synchronisiert dort hin gar nicht |
+| `day_rows` / `workout_rows` / `read_errors` | wie viel kam und mit welchen `resultCode` je Familie |
+| `notice` | die fertige Aussage: welcher Host für wie viele Tage nichts geantwortet hat |
 
-Два служебных запроса (`getBindDevice`, `getSyncVersions`) идут **только** на пустом
-ответе: на обычных данных их нет, и в атрибутах они не опрашиваются при каждом обновлении.
+`getBindDevice` und `getSyncVersions` laufen **nur** bei leerer Antwort — bei normalen Daten
+nicht, und beim Anzeigen der Attribute werden sie ebenfalls nicht abgefragt.
 
-### Где что хранится
+### Was wo gespeichert
 
-| Данные | Место |
+| Daten | Ort |
 | --- | --- |
-| `accessToken`, `refreshToken`, `uid`, `siteId`, сроки, хосты | `entry.data` → `.storage/core.config_entries` |
-| Настройки опроса | тот же файл, но без секретов |
-| Снимок данных | только в памяти координатора |
-| Логи | `HuaweiAuthError`/`HuaweiApiError` содержат код и `resultDesc`, токенов в них нет |
+| `accessToken`, `refreshToken`, `uid`, `siteId`, Laufzeiten, Session-Host, `api_host` | `entry.data` → `.storage/core.config_entries` |
+| Abfrageeinstellungen und Region (wenn von Hand gesetzt) | dieselbe Datei, ohne Geheimnisse |
+| Snapshot der Daten | nur im Speicher des Coordinators |
+| Journal | `HuaweiAuthError`/`HuaweiApiError` enthalten Code und `resultDesc`, keine Tokens |
 
-Токены никогда не печатаются в логах.
+Tokens werden niemals ins Journal geschrieben.
 
-## Настройки аккаунта
+## Kontoeinstellungen
 
-**Настройки → Интеграции → Huawei Health → ⋮ → Настройки**:
+**Einstellungen → Integrationen → Huawei Health → ⋮ → Konfigurieren**:
 
-| Поле | По умолчанию | Смысл |
+| Feld | Standard | Bedeutung |
 | --- | --- | --- |
-| Интервал опроса | 15 мин | чаще нет смысла: облако обновляется синхронизацией часов |
-| Дней суточных данных | 3 | окно `*Stat`; на число запросов не влияет |
-| Дней тренировок | 7 | `*ByTime` читается окнами по 10 дней |
-| Опрашивать тренировки | включено | отключение убирает самый медленный запрос |
-| Опрашивать пульс/сон/стресс | включено | отключайте, если устройства с пульсом нет |
-| Облако, где лежат данные аккаунта | определять автоматически | четыре GRS-группы; пустой ответ от своего облака — самая частая причина «всё `unknown`». «Авто» стирает сохранённый адрес и прогоняет поиск заново |
-| `deviceCode` | 0 (весь аккаунт) | конкретные часы: id лежит в атрибуте `device_code` сенсоров последней тренировки и в `bound_devices`, полный список отдаёт `POST /profile/device/getBindDevice` с пустым телом |
+| `Poll interval, minutes` | 15 min | öfter bringt nichts: die App-Cloud bewegt sich nur durch die Synchronisation der Uhr |
+| `Days of daily data to keep` | 3 | Fenster der `*Stat`-Abfragen; wächst nicht mit der Zahl der Requests |
+| `How many days back to look for workouts` | 7 | `*ByTime` wird in 10-Tage-Fenstern gelesen |
+| `Poll workouts (getSportsDataByTime)` | an | abschalten nimmt den langsamsten Request weg |
+| `Poll heart rate, sleep and stress (getHealthStat)` | an | abschalten, wenn kein Gerät Puls oder Schlaf misst |
+| `Data centre holding this account` | automatisch suchen | vier GRS-Gruppen; eine leere Antwort der falschen Gruppe ist die häufigste Ursache für „alles `unknown`“. „Automatisch“ löscht die gespeicherte Adresse und sucht erneut |
+| `deviceCode` (0 = ganzes Konto) | 0 | eine bestimmte Uhr: der Code steckt im Attribut `device_code` der letzten Aktivität und in `bound_devices`, die vollständige Liste gibt `POST /profile/device/getBindDevice` mit leerem Body |
 
-Изменение настроек перезагружает только эту запись интеграции.
+Eine Änderung der Einstellungen lädt nur diesen einen Integrationseintrag neu.
 
-## Несколько аккаунтов
+## Mehrere Konten
 
-Каждый аккаунт — самостоятельная запись: свой вход, своя пара токенов, свой интервал, свой
-набор сенсоров и своё «устройство» в реестре устройств. Ограничений нет; единственное —
-**нельзя добавить один и тот же HUAWEI ID дважды** (unique id — `uid`, вторая попытка
-даёт `already_configured` и просто обновляет токены существующей записи).
+Jedes Konto ist ein eigener Eintrag: eigener Login, eigenes Tokenpaar, eigenes Intervall,
+eigener Sensorsatz, eigenes „Gerät“ im Geräte-Register. Es gibt keine Obergrenze; die eine
+Bedingung: **dieselbe HUAWEI ID kann nicht zweimal angelegt werden** (unique id ist die
+`uid`, der zweite Versuch ergibt `already_configured` und aktualisiert nur die Tokens des
+bestehenden Eintrags).
 
-Полезно для семьи: часы ребёнка/партнёра, синхронизированные в свой аккаунт, дают отдельные
-сущности, и автоматизации на них не пересекаются.
+Nützlich für Familien: die Uhr von Kind oder Partner, die in deren Konto synchronisiert,
+ergibt eigene Entitäten, und Automatisierungen schneiden sich nicht.
 
-## Примеры автоматизаций
+## Automatisierungsbeispiele
 
 ```yaml
-# Напомнить, что через две недели нужен повторный вход
+# daran erinnern, dass in zwei Wochen ein Login nötig ist
 automation:
   - trigger:
       - platform: numeric_state
@@ -431,77 +465,86 @@ automation:
       - service: notify.mobile_app
         data:
           message: >-
-            Через {{ states('sensor.andrey_relogin_in') }} дней Huawei
-            попросит войти заново.
+            In {{ states('sensor.andrey_relogin_in') }} Tagen verlangt Huawei
+            eine neue Anmeldung.
 ```
 
 ```yaml
-# Утренняя карточка: шаги за вчера, сон
+# Morgenskarte: Schritte von gestern, Schlaf
 template:
   - sensor:
-      - name: "Huawei: утренняя сводка"
+      - name: "Huawei: Morgenübersicht"
         state: >-
-          Шаги {{ states('sensor.andrey_steps') }};
-          сон {{ (states('sensor.andrey_sleep_duration') | float(0) / 60) | round(1) }} ч;
-          пульс покоя {{ states('sensor.andrey_resting_heart_rate') }}.
+          Schritte {{ states('sensor.andrey_steps') }};
+          Schlaf {{ (states('sensor.andrey_sleep_duration') | float(0) / 60) | round(1) }} h;
+          Puls in Ruhe {{ states('sensor.andrey_resting_heart_rate') }}.
 ```
 
-## Что делать при ошибках
+## Fehlerbilder
 
-| Симптом | Причина | Что делать |
+| Symptom | Ursache | Was tun |
 | --- | --- | --- |
-| `already_configured` при входе | аккаунт уже добавлен | обновите токены через «Настроить» (reauth), а не создавайте новую запись |
-| `20020001` | `authorizationCode` истёк или уже использован | откройте страницу входа заново и вставьте новый код |
-| `20020003` | refresh-токен отозван/истёк (180 дней) | «Настроить» → новый вход |
-| `20010004` | заголовок `x-huid` не совпадает с токеном | интеграция ротирует/перезапрашивает сама; если осталось — переустановите запись |
-| `1001` | окно `*ByTime` шире 10 дней либо время в секундах | проверьте `Дней тренировок`; интеграция дробит окно сама |
-| `1002`/`1004` | accessToken больше не жив (обычно телефон перепроверил пару) | ротация и повтор запроса автоматические |
-| `1005` | тело без токена | ошибка конфигурации, создайте запись заново |
-| `30005 Invalid device` | `deviceCode` из другого аккаунта | сбросьте поле `deviceCode` на 0 или возьмите свой |
-| Кнопка «Разрешить» не нажимается | мобильный режим не применён | **F12 → Ctrl+Shift+M → выбрать устройство → Reload** |
-| Нет строки `Failed to launch` | страница не дошла до редиректа | снимите адрес через **Network → 302 → Location** |
-| Все сенсоры `unknown`, а «Повторный вход через, дней» = 180 | опрашивается облако чужой GRS-группы (страна HUAWEI ID) либо в аккаунте нет данных | откройте атрибуты сенсора «Повторный вход через, дней»: `data_host`, `bound_devices`, `sync_ledger`, `notice`; поменяйте облако в «Настройках» и перезагрузите запись |
-| Сенсоры стали `unavailable` | облако отвечает ошибкой (просадка, отозванный токен) | в атрибуте `read_errors` лежат `resultCode`; в журнале — строка `answered nothing for the last N days` |
+| `already_configured` beim Login | Konto ist schon angelegt | Tokens über „Konfigurieren“ (reauth) erneuern, statt einen neuen Eintrag zu erzeugen |
+| `20020001` | `authorizationCode` abgelaufen oder schon benutzt | Login-Seite neu öffnen und neuen Code einfügen |
+| `20020003` | refreshToken widerrufen oder abgelaufen (180 Tage) | „Konfigurieren“ → neuer Login |
+| `20010004` | Header `x-huid` passt nicht zum Token | Integration rotiert/neu anfragt selbst; bleibt es bestehen, den Eintrag neu anlegen |
+| `1001` | `*ByTime`-Fenster breiter als 10 Tage oder Zeit in Sekunden | `How many days back to look for workouts` prüfen; die Integration zerlegt das Fenster selbst |
+| `1002`/`1004` | accessToken lebt nicht mehr (meist hat das Telefon das Paar neu geprüft) | Rotation und Wiederholung laufen automatisch |
+| `1005` | Body ohne Token | Konfigurationsfehler, Eintrag neu anlegen |
+| `30005 Invalid device` | `deviceCode` aus einem anderen Konto | Feld `deviceCode` auf 0 setzen oder den eigenen nehmen |
+| Knopf „Allow“ reagiert nicht | Mobilmodus greift nicht | **F12 → Strg+Shift+M → Gerät wählen → Reload** |
+| Zeile `Failed to launch` fehlt | Seite ist nie zum Redirect gekommen | Adresse über **Network → 302 → Location** holen |
+| Alle Sensoren `unknown`, „Wiederanmeldung in Tagen“ = 180 | es wird die Cloud einer fremden GRS-Gruppe gefragt (Land der HUAWEI ID) oder das Konto hat keine Daten | Attribute des Sensors „Wiederanmeldung in Tagen“ öffnen: `data_host`, `bound_devices`, `sync_ledger`, `notice`; unter „Konfigurieren“ die Gruppe umstellen, Eintrag lädt neu |
+| Sensoren sind `unavailable` | die Cloud antwortet mit einem Fehler (Aussetzer, widerrufenes Token) | `read_errors` enthält die `resultCode`; im Journal steht `answered nothing for the last N days` bzw. der Fehlercode |
+| Eintrag lädt ewig nicht durch | eine Data-Gruppe filtert den Port und die Suche hängt | kurzes `DISCOVERY_TIMEOUT` begrenzt das; im Journal stehen die Urteile aller vier Gruppen, Region von Hand setzen |
 
-## Безопасность и ограничения
+## Sicherheit und Grenzen
 
-- **Неофициальный API.** Схема запросов не задокументирована Huawei и может измениться с
-  обновлением приложения. Если облако поменяет ответ — интеграция укажет ошибку в 
-  `resultCode`.
-- **Одна живая сессия на устройство.** И Health-приложение, и интеграция используют один и
-  тот же refresh-токен; права тот, кто последним выполнил ротацию. Интеграция
-  восстанавливается автоматической ротацией, но если телефон начнёт «отъедать» токен
-  каждые несколько минут, уменьшите частоту опроса или отключите синхронизацию приложения.
-- **Капча не обходится.** Ни один запрос на логин (`getLoginWay`, `chkRisk`, `remoteLogin`)
-  интеграция не шлёт: Huawei для европейских/российских аккаунтов отдаёт
-  `displayCaptchaType = 1` (скользящая капча `captchaSafe`), и единственным честным
-  решением остаётся человек в браузере.
-- **Секреты.** `accessToken`/`refreshToken` лежат в `.storage/core.config_entries`. Резервные
-  копии этого файла надо беречь как пароли: refresh-токен даёт доступ к медицинской
-  статистике аккаунта на 180 дней.
-- **Ответственность.** Использование неофициального облака может нарушать условия
-  обслуживания Huawei. Проект не связан с Huawei и не одобрен ею; всё — как есть.
+- **Inoffizielle API.** Das Anfrageschema ist von Huawei nicht dokumentiert und kann sich mit
+  einem App-Update ändern. Ändert die Cloud ihre Antworten, weist die Integration den Fehler
+  über `resultCode` aus.
+- **Eine lebende Sitzung pro Gerät.** Health-App und Integration benutzen denselben
+  refreshToken; recht hat, wer zuletzt rotiert hat. Die Integration erholt sich über
+  automatische Rotation, aber wenn das Telefon das Token alle paar Minuten „zurückholt“,
+  Abfrageintervall vergrößern oder die Synchronisation der App abschalten.
+- **Captcha wird nicht umgangen.** Kein Login-Request (`getLoginWay`, `chkRisk`,
+  `remoteLogin`) wird gesendet: Huawei liefert für europäische/russische Konten
+  `displayCaptchaType = 1` (Slide-Captcha `captchaSafe`), und das einzige ehrliche Lösen ist
+  ein Mensch im Browser.
+- **Geheimnisse.** `accessToken`/`refreshToken` liegen in `.storage/core.config_entries`.
+  Backups dieser Datei sind wie Passwörter zu behandeln: der refreshToken gibt 180 Tage lang
+  Zugriff auf die Gesundheitsstatistik des Kontos.
+- **Verantwortung.** Die Nutzung der inoffiziellen Cloud kann gegen die
+  Nutzungsbedingungen von Huawei verstoßen. Das Projekt steht zu Huawei in keiner Beziehung
+  und ist von ihm nicht gebilligt; alles ohne Gewähr.
 
-## Разработка и релизы
+## Entwicklung und Releases
 
-- `client.py` не импортирует Home Assistant — его можно гонять из `python3` целиком, и вся
-  логика разбора ответов проверяется без запуска HA. Так же проверяется и протокол:
-  `Tokens(refresh_token=…, uid=…, session_host=…)` из своего хранилища, затем
-  `HuaweiHealthClient(tokens).daily_summary(3)`. Токены при этом в репозиторий не попадают.
-- Валидация для HACS: workflow [`.github/workflows/hacs.yml`](.github/workflows/hacs.yml)
-  (action `hacs/action`). Релиз собирается workflow
-  [`.github/workflows/release.yml`](.github/workflows/release.yml): push тега `vX.Y.Z`
-  (версия в `manifest.json` должна совпадать) → артефакт `huawei_health.zip` внутри
-  содержит путь `custom_components/huawei_health/`, как ожидает HACS.
-- Для публикации в HACS нужны (это проверяет `hacs/action`, а не только ревью каталога):
-  `hacs.json`, `manifest.json` с `domain/name/version/documentation/issue_tracker/codeowners/
-  config_flow/iot_class/integration_type`, `translations/en.json`, `LICENSE`, минимум один
-  релиз, топики `home-assistant` **и** один из `integration`/`custom-component` на
-  репозитории, и бренд-ассет `custom_components/huawei_health/brand/icon.png` (или запись
-  о домене в `home-assistant/brands`) — без него валидация падает с `Validation brands`.
-  Иконка лежит в репозитории, регенерируется `python3 tools/make_icon.py …` (чистый
-  stdlib, 512×512, прозрачный фон).
+- `client.py` importiert Home Assistant nicht — es lässt sich komplett in `python3` laufen,
+  und die Parserei der Antworten ist ohne HA-Start prüfbar. Genauso lässt sich das Protokoll
+  prüfen: `Tokens(refresh_token=…, uid=…, session_host=…)` aus dem eigenen Bestand, dann
+  `HuaweiHealthClient(tokens).daily_summary(3)`. Tokens gehören dabei nicht ins Repository.
+- Vom Terminal aus diagnosticert `tools/probe.py` ein Konto ohne Home Assistant:
+  `python3 tools/probe.py --refresh-token …` (die Tokens stehen im Eintrag in
+  `.storage/core.config_entries` unter `huawei_health`). Es druckt, welche der vier Gruppen
+  Zeilen hat, welche Geräte gebunden sind, was `getSyncVersions` jemals gesehen hat, und
+  welche Metrikfamilien Zahlen enthalten — der Weg, wenn das Dashboard überall `unknown`
+  zeigt und das Journal nicht reicht.
+- HACS-Validierung: Workflow [`.github/workflows/hacs.yml`](.github/workflows/hacs.yml)
+  (action `hacs/action`). Das Release baut
+  [`.github/workflows/release.yml`](.github/workflows/release.yml): Tag `vX.Y.Z` pushen
+  (die Version in `manifest.json` muss passen) → Artifact `huawei_health.zip`, das
+  `custom_components/huawei_health/` als Pfad enthält, wie HACS es erwartet.
+- Für die HACS-Veröffentlichung braucht es (das prüft `hacs/action`, nicht erst das
+  Katalog-Review): `hacs.json`, `manifest.json` mit
+  `domain/name/version/documentation/issue_tracker/codeowners/config_flow/iot_class/
+  integration_type`, `translations/en.json`, `LICENSE`, mindestens ein Release, die Topics
+  `home-assistant` **und** eines von `integration`/`custom-component` im Repository, und den
+  Brand-Asset `custom_components/huawei_health/brand/icon.png` (oder einen Markeneintrag in
+  `home-assistant/brands`) — sonst scheitert die Validierung mit `Validation brands`. Der
+  Icon liegt im Repository und wird mit `python3 tools/make_icon.py …` neu erzeugt (reine
+  Standardbibliothek, 512×512, transparenter Hintergrund).
 
-## Лицензия
+## Lizenz
 
-MIT. См. [LICENSE](LICENSE).
+MIT. Siehe [LICENSE](LICENSE).
